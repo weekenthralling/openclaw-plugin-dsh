@@ -45,8 +45,9 @@ OpenClaw 继续做它擅长的事——渠道、路由、会话、可见的聊�
 ## 快速开始
 
 ```bash
-# 1. 安装(源码安装需先 npm install && npm run build)
-openclaw plugins install <本仓库路径>
+# 1. 安装(推荐:从 ClawHub 安装;源码安装需先 npm install && npm run build)
+openclaw plugins install clawhub:openclaw-deepseek-harness
+openclaw plugins install <本仓库路径>   # 源码安装
 
 # 2. 让 agent 指向 harness
 openclaw config set agents.defaults.model "dsh/deepseek-v4-pro"

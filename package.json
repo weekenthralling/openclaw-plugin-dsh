@@ -1,7 +1,25 @@
 {
-  "name": "openclaw-plugin-dsh",
+  "name": "openclaw-deepseek-harness",
   "version": "0.1.0",
-  "description": "OpenClaw agent-harness plugin that runs agent turns through an embedded DeepSeek Harness (DSH) agent",
+  "description": "OpenClaw plugin that runs agent turns through an embedded DeepSeek Harness (DSH) agent — swap OpenClaw's agent for DeepSeek Harness with one model ref",
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "deepseek",
+    "deepseek-harness",
+    "dsh",
+    "agent-harness",
+    "ai-agent",
+    "coding-agent"
+  ],
+  "homepage": "https://github.com/ZRui-C/openclaw-plugin-dsh#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ZRui-C/openclaw-plugin-dsh.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ZRui-C/openclaw-plugin-dsh/issues"
+  },
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

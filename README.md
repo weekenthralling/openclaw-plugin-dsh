@@ -46,7 +46,9 @@ uses for its own Codex harness, now available for the DeepSeek Harness.
 ## Quick start
 
 ```bash
-# 1. Install (from a source checkout: npm install && npm run build first)
+# 1. Install (ClawHub, recommended):
+openclaw plugins install clawhub:openclaw-deepseek-harness
+# or from a source checkout: npm install && npm run build first
 openclaw plugins install <path-to-this-package>
 
 # 2. Point an agent at the harness
