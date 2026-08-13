@@ -1,5 +1,8 @@
 # openclaw-plugin-dsh
 
+> **Author**: this plugin was written entirely by **DeepSeek V4 Pro**
+> (`deepseek-v4-pro`), running as a DeepSeek Harness agent.
+
 Run OpenClaw agent turns through an embedded **DeepSeek Harness (DSH)** agent.
 
 Instead of OpenClaw's built-in runner, the `dsh` agent harness boots one DSH
@@ -23,6 +26,9 @@ same split OpenClaw uses for its Codex harness.
 ## Install
 
 ```bash
+# From a source checkout: build first
+npm install && npm run build
+
 openclaw plugins install <path-to-this-package>
 # or from a packed tarball (proves the managed npm install shape):
 npm pack && openclaw plugins install npm-pack:openclaw-plugin-dsh-0.1.0.tgz
