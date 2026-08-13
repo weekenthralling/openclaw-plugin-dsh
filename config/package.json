@@ -1,0 +1,10 @@
+{
+  "name": "openclaw-dsh-profile",
+  "private": true,
+  "description": "DSH profile template shipped by openclaw-plugin-dsh: the dsh-base core bundle composed by the plugin's embedded host boot.",
+  "dsh": {
+    "profile": {
+      "bundles": ["@deepseek-ai/dsh-base"]
+    }
+  }
+}

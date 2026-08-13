@@ -1,0 +1,40 @@
+{
+  "id": "dsh",
+  "name": "DeepSeek Harness (DSH)",
+  "description": "Runs OpenClaw agent turns through an embedded DeepSeek Harness agent with its own tools, sessions, compaction, and goals.",
+  "providers": ["dsh"],
+  "activation": {
+    "onStartup": true,
+    "onAgentHarnesses": ["dsh"]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "dshHome": {
+        "type": "string",
+        "description": "DSH home directory ($DSH_HOME) for settings.yaml, credentials, and session persistence. Defaults to ~/.dsh, sharing the machine's existing DeepSeek Harness configuration."
+      },
+      "modelProvider": {
+        "type": "string",
+        "description": "Optional DSH provider route override for embedded agents. Defaults to the DeepSeek Harness selection (settings.yaml or deepseek-official)."
+      },
+      "model": {
+        "type": "string",
+        "description": "Optional DSH model id override, used together with modelProvider. Defaults to the DeepSeek Harness selection."
+      },
+      "workspaceRoot": {
+        "type": "string",
+        "description": "Filesystem root the embedded DSH sandbox treats as workspace-write. Defaults to the home directory."
+      },
+      "persona": {
+        "type": "string",
+        "description": "System-prompt persona line for the embedded DSH agent. Defaults to the built-in OpenClaw embedding persona."
+      },
+      "turnTimeoutMs": {
+        "type": "number",
+        "description": "Safety cap (ms) for one embedded DSH turn. Defaults to 900000."
+      }
+    }
+  }
+}

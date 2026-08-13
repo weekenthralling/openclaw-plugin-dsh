@@ -1,0 +1,4 @@
+# openclaw-plugin-dsh profile root — an empty entry list. The tree is composed
+# as patches: the @deepseek-ai/dsh-base bundle patch, then this profile's
+# cordis.patch.yml, then the plugin's runtime overlay rows. Do not add entries here.
+[]

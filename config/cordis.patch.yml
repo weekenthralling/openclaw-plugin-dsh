@@ -1,0 +1,16 @@
+# openclaw-plugin-dsh static overlay, applied over the dsh-base bundle patch.
+# Runtime values (workspace root, persona override, model route override) arrive
+# as in-memory patch rows from the plugin host boot, which always layer after
+# this file so operator config wins.
+
+# The embedded host lives inside the OpenClaw gateway process: no module-reload
+# watcher, no cwd file watching.
+- id: hmr
+  disabled: true
+
+# Deployment persona for agents created by this embedded host.
+- id: system-prompt
+  config:
+    persona: >-
+      You are the DeepSeek Harness agent embedded inside OpenClaw. Your working
+      directory is {{cwd}}.
