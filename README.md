@@ -1,146 +1,195 @@
 # openclaw-plugin-dsh
 
-> **Author**: this plugin was written entirely by **DeepSeek V4 Pro**
-> (`deepseek-v4-pro`), running as a DeepSeek Harness agent.
+<div align="center">
 
-Run OpenClaw agent turns through an embedded **DeepSeek Harness (DSH)** agent.
+**Give your OpenClaw the brain of DeepSeek Harness — one model ref away.**
 
-Instead of OpenClaw's built-in runner, the `dsh` agent harness boots one DSH
-core tree inside the OpenClaw gateway process and hands each OpenClaw session
-its own DSH Agent. The DeepSeek Harness keeps its own model route, persona,
-tools (bash/fs/search/subagents/goals/…), session persistence, and compaction;
-OpenClaw keeps channels, sessions, routing, and the visible transcript — the
-same split OpenClaw uses for its Codex harness.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![OpenClaw](https://img.shields.io/badge/OpenClaw-2026.7.1--2-222222)](https://docs.openclaw.ai)
+[![DeepSeek Harness](https://img.shields.io/badge/DeepSeek_Harness-0.1.0--rc.6-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
+[![Author](https://img.shields.io/badge/written_by-DeepSeek_V4_Pro-8A2BE2)](https://api-docs.deepseek.com)
 
-## What you get
+> **Written entirely by DeepSeek V4 Pro** — every line of this plugin was
+> authored by a DeepSeek Harness agent running on `deepseek-v4-pro`.
 
-- `dsh/<model>` model refs resolve and route to the embedded DSH agent
-  (any `dsh/<model>` id is accepted; the actual model comes from DSH config).
-- Cross-restart session continuity: DSH sessions persist to
-  `$DSH_HOME/sessions` and resume per OpenClaw session.
-- Streaming replies, reasoning, and tool-result previews bridge into
-  OpenClaw's reply pipeline.
-- `/new` (session reset) disposes the DSH agent for that session.
-- DSH failures surface as OpenClaw run failures with the real DSH error.
+</div>
 
-## Install
+## What it does
+
+`openclaw-plugin-dsh` replaces the turn executor inside OpenClaw with an
+**embedded DeepSeek Harness (DSH) agent**. When a session routes to a
+`dsh/...` model ref, your message no longer goes through OpenClaw's
+provider transport — it is handed to a live DSH Agent running **in the same
+process**, with the full DeepSeek Harness stack underneath:
+
+- its own model route and reasoning effort (from your DSH `settings.yaml`),
+- its own tools — bash, file search, editing, subagents, workflows, goals,
+  web search, and more,
+- its own session persistence and compaction,
+- streaming deltas bridged back into OpenClaw's reply pipeline.
+
+OpenClaw keeps what it is good at — channels, routing, sessions, the visible
+transcript — while DSH owns the agent loop. It is the same split OpenClaw
+uses for its own Codex harness, now available for the DeepSeek Harness.
+
+## Why you want it
+
+| | |
+| --- | --- |
+| ⚡ **Zero-latency handoff** | No subprocess, no HTTP, no websocket. The DSH host boots in-process, so each turn starts instantly. |
+| 🧠 **A real agent, not a model call** | DSH plans, runs tools, compacts, spawns subagents, and tracks goals inside one turn. |
+| 🔁 **Session continuity** | DSH sessions persist to `$DSH_HOME/sessions` and resume across gateway restarts — your conversations survive reboots. |
+| 🛠️ **Bring your DSH config** | Model, credentials, and skills come from the DeepSeek Harness you already run. Zero credential duplication. |
+| 🧯 **Fails like a grown-up** | Aborts, timeouts, and credential errors surface as clean OpenClaw run failures — with the real DSH error message. |
+| 📦 **One dependency block** | Everything ships through npm: `@deepseek-ai/dsh-*` packages, pure JS, no native builds. |
+
+## Quick start
 
 ```bash
-# From a source checkout: build first
-npm install && npm run build
-
+# 1. Install (from a source checkout: npm install && npm run build first)
 openclaw plugins install <path-to-this-package>
-# or from a packed tarball (proves the managed npm install shape):
-npm pack && openclaw plugins install npm-pack:openclaw-plugin-dsh-0.1.0.tgz
+
+# 2. Point an agent at the harness
+openclaw config set agents.defaults.model "dsh/deepseek-v4-pro"
+
+# 3. Talk to it
+openclaw agent --local --agent main --message "Hello from DeepSeek Harness"
 ```
 
-Restart the gateway after install. Verify:
+That's it. `dsh/<any-model-id>` refs are accepted — the actual model is
+chosen by the DeepSeek Harness itself (its `agent-default-model` route),
+so you never maintain a second model catalog.
 
-```bash
-openclaw plugins inspect dsh --runtime
+## How it works
+
+```
+OpenClaw gateway process
+┌───────────────────────────────────────────────────────────────┐
+│  channel / session / routing / transcript        (OpenClaw)   │
+│                        │                                       │
+│                        ▼  prepared attempt                     │
+│   ┌─────────────────────────────────────────────┐             │
+│   │        dsh agent harness (this plugin)      │             │
+│   │  supports() · runAttempt() · reset()        │             │
+│   └───────────────────────┬─────────────────────┘             │
+│                           │                                    │
+│   ┌───────────────────────▼─────────────────────┐             │
+│   │        embedded DeepSeek Harness host       │             │
+│   │  dsh-base bundle · model route · sandbox    │             │
+│   │   ┌─────────┐  ┌─────────┐  ┌────────────┐  │             │
+│   │   │ Agent A │  │ Agent B │  │ Agent …    │  │             │
+│   │   │ session │  │ session │  │            │  │             │
+│   │   └─────────┘  └─────────┘  └────────────┘  │             │
+│   └───────────────────────┬─────────────────────┘             │
+│                           │ session/event firehose             │
+│   streaming deltas · reasoning · tool results ───────────────▶ │
+│                          reply pipeline                        │
+└───────────────────────────────────────────────────────────────┘
 ```
 
-If your `openclaw.json` uses a restrictive allowlist, add `dsh` to
-`plugins.allow`.
+1. **Boot once.** On the first claimed attempt, the plugin boots one DSH
+   core tree (the `dsh-base` profile bundle plus a small patch layer:
+   HMR off, persona, sandbox root) through `@deepseek-ai/dsh-app-boot`.
+2. **One Agent per OpenClaw session.** Each OpenClaw session maps to a
+   stable DSH session id (`oc-<session-id>`). First use creates the Agent;
+   later gateway processes resume the persisted DSH session from disk.
+3. **Bridge the turn.** The user prompt enters via `agent.followup(...)`;
+   the scoped `session/event` firehose maps `assistant/chunk` deltas to
+   `onPartialReply`, reasoning to `onReasoningStream`, tool results to
+   `onToolResult`, and assembled messages to the attempt result.
+4. **Stay reversible.** Abort signals and the turn timeout cancel the DSH
+   agent; `sessions.flush` persists before the attempt resolves; `/new`
+   disposes the session's Agent; plugin unload disposes the whole host.
 
-## Activate
+## Configuration
 
-Either use a `dsh/...` model ref (recommended):
+All fields are optional, under `plugins.entries.dsh.config` in
+`openclaw.json`:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `dshHome` | `~/.dsh` | `$DSH_HOME` for settings, credentials, and session persistence |
+| `modelProvider` | DSH selection | Provider route override for embedded agents |
+| `model` | DSH selection | Model id override (used with `modelProvider`) |
+| `workspaceRoot` | `$HOME` | Filesystem root the DSH sandbox treats as workspace-write |
+| `persona` | built-in persona | System-prompt persona for the embedded agent |
+| `turnTimeoutMs` | `900000` | Safety cap for one embedded DSH turn |
 
 ```json5
-// openclaw.json
 {
-  agents: { defaults: { model: "dsh/deepseek-v4-pro" } },
-}
-```
-
-or pin the harness on any existing model entry:
-
-```json5
-{
-  agents: {
-    defaults: {
-      model: "openai/gpt-5.5",
-      models: {
-        "openai/gpt-5.5": { agentRuntime: { id: "dsh" } },
+  plugins: {
+    entries: {
+      dsh: {
+        config: {
+          modelProvider: "deepseek-official",
+          model: "deepseek-v4-pro",
+          workspaceRoot: "/Users/me/projects",
+        },
       },
     },
   },
 }
 ```
 
-## Credentials and model choice
+## Activation modes
 
-The embedded host reads the machine's DeepSeek Harness configuration
-(`$DSH_HOME`, default `~/.dsh`): `settings.yaml` picks the provider/model
-(and reasoning effort), and credentials come from `~/.dsh/.credentials.yaml`
-(written by the DSH web Models page) or `DEEPSEEK_API_KEY` in the gateway
-environment.
+```json5
+// A. dsh model ref (recommended) — any dsh/<model> id resolves
+{ agents: { defaults: { model: "dsh/deepseek-v4-pro" } } }
 
-## Configuration
-
-Optional, under `plugins.entries.dsh.config`:
-
-| Field           | Default          | Meaning                                                        |
-| --------------- | ---------------- | -------------------------------------------------------------- |
-| `dshHome`       | `~/.dsh`         | `$DSH_HOME` for settings, credentials, and session persistence |
-| `modelProvider` | DSH selection    | Provider route override for embedded agents                    |
-| `model`         | DSH selection    | Model id override (used with `modelProvider`)                  |
-| `workspaceRoot` | `$HOME`          | Filesystem root the DSH sandbox treats as workspace-write      |
-| `persona`       | built-in persona | System-prompt persona for the embedded agent                   |
-| `turnTimeoutMs` | `900000`         | Safety cap for one embedded DSH turn                           |
-
-Sandbox policy follows `DSH_PERMISSION_MODE` (default `workspace-write`; set
-`danger-full-access` for unattended gateway use, since DSH approval prompts
-have no interactive answerer in this embedding).
-
-## Debugging
-
-```bash
-OPENCLAW_DSH_DEBUG=1 openclaw agent --local --agent main \
-  --message "hi" --model dsh/deepseek-v4-pro
+// B. Pin the harness on an existing model entry
+{
+  agents: {
+    defaults: {
+      model: "openai/gpt-5.5",
+      models: { "openai/gpt-5.5": { agentRuntime: { id: "dsh" } } },
+    },
+  },
+}
 ```
 
-Common failures:
+## Verified end to end
 
-- `no API key for provider route ...` — configure DSH credentials
-  (`~/.dsh/.credentials.yaml` via the DSH web Models page, or export
-  `DEEPSEEK_API_KEY` in the gateway environment).
-- `plugins.allow` warning — add `"dsh"` to `plugins.allow` in `openclaw.json`.
+Validated on `openclaw` **2026.7.1-2** + `@deepseek-ai/dsh-*` **0.1.0-rc.6**:
 
-## How it works
+| Scenario | Result |
+| --- | --- |
+| Single turn via `dsh/deepseek-v4-pro` | ✅ answered by the embedded DSH agent |
+| Two turns across separate gateway processes | ✅ turn 2 resumed the persisted DSH session and recalled turn-1 context |
+| Credential failure | ✅ real DSH error surfaced as an OpenClaw run failure; clean shutdown |
+| Plugin load | ✅ `openclaw plugins inspect dsh` → loaded, hybrid-capability |
 
-1. The plugin entry is SDK-free and load-lightweight; it registers a
-   synthetic `dsh` provider (pass-through `resolveDynamicModel`) and the
-   `dsh` agent harness at startup.
-2. On the first claimed attempt, the harness boots one embedded DSH host
-   (profile template in `config/`: `@deepseek-ai/dsh-base` bundle plus a
-   patch layer disabling HMR, setting the persona, and pinning the sandbox
-   root). The host is disposed on plugin unload.
-3. Each OpenClaw session maps to a DSH session id (`oc-<session-id>`);
-   first use creates an Agent, later processes resume the persisted DSH
-   session, and the agent stays live for the process lifetime.
-4. Per turn: the user prompt is sent via `agent.followup(...)`; the
-   `session/event` firehose bridges `assistant/chunk` deltas to
-   `onPartialReply`, reasoning to `onReasoningStream`, tool results to
-   `onToolResult`, and assembled messages to the attempt result.
-5. Abort/`timeoutMs` cancel the DSH agent; `sessions.flush` persists before
-   the attempt resolves; the result shape is the normalized
-   `AgentHarnessAttemptResult` OpenClaw's pipeline expects.
+## Troubleshooting
 
-## Limitations
+| Symptom | Fix |
+| --- | --- |
+| `no API key for provider route ...` | Configure DSH credentials (`~/.dsh/.credentials.yaml` via the DSH web Models page) or export `DEEPSEEK_API_KEY` in the gateway environment |
+| `plugins.allow` warning | Add `"dsh"` to `plugins.allow` in `openclaw.json` |
+| Nothing happens / want visibility | Run the gateway with `OPENCLAW_DSH_DEBUG=1` |
 
-- OpenClaw's agent-harness surface for third-party plugins is still marked
-  experimental; this plugin is validated against `openclaw` 2026.7.1-2 and
-  `@deepseek-ai/dsh-*` 0.1.0-rc.6.
-- OpenClaw's own tools, custom instructions, and system prompt do not flow
-  into the DSH agent — DSH runs its own tool ecosystem and persona
+## Known limitations
+
+- OpenClaw's agent-harness surface for third-party plugins is still
+  experimental; this plugin pins the validated version pair above.
+- OpenClaw's own tools and custom instructions do not flow into the DSH
+  agent — DSH runs its own tool ecosystem and persona
   (`extraSystemPrompt` is bridged as injected context).
 - One embedded host per gateway process means one global `workspaceRoot`;
-  per-session `cwd` still follows the OpenClaw session workspace.
-- DSH compaction and goals run inside DSH's own loop; OpenClaw-side
-  preflight compaction does not apply to DSH sessions.
+  per-session working directories still follow the OpenClaw session.
+- DSH approval prompts have no interactive answerer in this embedding, so
+  sandbox escalations fail closed unless you set
+  `DSH_PERMISSION_MODE=danger-full-access` for unattended gateways.
+
+## Roadmap
+
+- [ ] Map OpenClaw workspace files into the DSH agent bootstrap context
+- [ ] Optional bridge of OpenClaw tools into DSH via a scoped tool preset
+- [ ] Approvals surfaced through OpenClaw's review UI
+- [ ] npm / ClawHub distribution
 
 ## License
 
-MIT. DeepSeek Harness packages are MIT-licensed (deepseek-ai/deepseek-harness).
+MIT — see [LICENSE](LICENSE). DeepSeek Harness packages are MIT-licensed
+([deepseek-ai/deepseek-harness](https://github.com/deepseek-ai/deepseek-harness)).
+
+**Chinese docs**: [中文说明](README.zh-CN.md)
