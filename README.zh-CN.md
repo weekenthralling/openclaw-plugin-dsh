@@ -37,7 +37,9 @@ OpenClaw 继续做它擅长的事——渠道、路由、会话、可见的聊�
 | --- | --- |
 | ⚡ **零延迟交接** | 没有子进程、没有 HTTP、没有 websocket。DSH host 在同进程内启动,每个回合即时开始。 |
 | 🧠 **真 agent,不是一次模型调用** | DSH 在一个回合内规划、执行工具、压缩上下文、派生子 agent、跟踪目标。 |
-| 🔁 **会话不断线** | DSH 会话持久化到 `$DSH_HOME/sessions`,网关重启后自动恢复——对话扛得住重启。 |
+| 🎭 **会话级 Agent Preset** | 开箱即用 `standard`/`code`/`cordis`/`minimal` 四套组合,还能在 `$DSH_HOME/.agent-presets/<id>/` 自己写——每个 OpenClaw agent 选自己的工具、人设、技能。 |
+| 🔌 **能自我修改的运行时** | 用 `cordis` preset 时,内嵌 agent 可以在对话中 `cordis_define`→`cordis_run`→`cordis_stop` 临时插件,现场给自己加能力。 |
+| 🔁 **会话不断线** | DSH 会话持久化到 `$DSH_HOME/sessions`,网关重启后自动恢复——对话和它的 preset 一起扛得住重启。 |
 | 🛠️ **沿用你的 DSH 配置** | 模型、凭据、技能全部来自你已经在用的 DeepSeek Harness,凭据零重复。 |
 | 🧯 **失败得像个大人** | 中止、超时、凭据错误都会干净地变成 OpenClaw 运行失败——带着真实的 DSH 错误信息。 |
 | 📦 **一个依赖块搞定** | 全部经 npm 安装:`@deepseek-ai/dsh-*` 纯 JS 包,无原生编译。 |
@@ -111,6 +113,8 @@ OpenClaw 网关进程
 | `model` | DSH 自选 | 模型 id 覆盖(与 `modelProvider` 搭配) |
 | `workspaceRoot` | `$HOME` | DSH 沙箱视为 workspace-write 的文件系统根 |
 | `persona` | 内置 persona | 内嵌 agent 的系统提示词人设 |
+| `agentPreset` | `standard` | 会话级 DSH agent preset:`standard`、`code`、`cordis`(额外带动态 Cordis 插件工具集)、`minimal`,或你在 `$DSH_HOME/.agent-presets/<id>/` 里自写的 preset |
+| `allowDynamicPlugins` | `true` | 挂载动态 Cordis 插件运行时(`cordis_define`/`cordis_run`/`cordis_inspect_*`/`cordis_stop`),让 `cordis` preset 的 agent 在运行时给自己加能力 |
 | `turnTimeoutMs` | `900000` | 单个内嵌 DSH 回合的安全上限(毫秒) |
 
 ```json5
@@ -122,12 +126,18 @@ OpenClaw 网关进程
           modelProvider: "deepseek-official",
           model: "deepseek-v4-pro",
           workspaceRoot: "/Users/me/projects",
+          agentPreset: "cordis", // 会自我修改的 agent
         },
       },
     },
   },
 }
 ```
+
+> **写自己的 preset**:把内置组合复制到 `~/.dsh/.agent-presets/<id>/`,改里面的
+> 行,再把 `agentPreset` 指向你的 id——OpenClaw agent 就拥有你选定的工具、
+> 人设与技能。`cordis` preset 自带 `editing-cordis-compositions` 技能,写
+> preset 有据可依。
 
 ## 激活方式
 
@@ -154,6 +164,9 @@ OpenClaw 网关进程
 | --- | --- |
 | `dsh/deepseek-v4-pro` 单轮回合 | ✅ 由内嵌 DSH agent 作答 |
 | 跨两次网关进程的两轮回合 | ✅ 第二轮回合恢复持久化 DSH 会话并回忆起第一轮内容 |
+| 创建时挂载 `cordis` preset | ✅ 通过 OpenClaw 运行 `cordis_inspect_list`,列出 4 个 host provider |
+| 回合内动态插件完整生命周期 | ✅ agent 自主完成 `cordis_define`→`cordis_run`(插件真实执行)→`cordis_stop` |
+| 重启后 preset 不丢 | ✅ resume 的会话从持久化日志里恢复并重挂它记录的 preset |
 | 凭据缺失 | ✅ 真实 DSH 错误以 OpenClaw 运行失败呈现;进程干净退出 |
 | 插件加载 | ✅ `openclaw plugins inspect dsh` → loaded,hybrid-capability |
 
@@ -175,9 +188,13 @@ OpenClaw 网关进程
   工作目录仍跟随 OpenClaw 会话。
 - 在这种内嵌场景下,DSH 的审批提示没有交互式应答方,沙箱提权默认
   fail-closed;无人值守的网关可设 `DSH_PERMISSION_MODE=danger-full-access`。
+- 带 Client(浏览器)半区的动态插件需要审批 UI:内嵌场景下纯 host 包直接
+  运行,Client 包在缺少交互式审核方时 fail-closed。
 
 ## 路线图
 
+- [x] ClawHub 分发(`clawhub:openclaw-deepseek-harness`)
+- [x] DSH agent preset + 动态 Cordis 插件运行时
 - [ ] 把 OpenClaw 工作区文件映射进 DSH agent 的引导上下文
 - [ ] 通过受限的工具 preset 把 OpenClaw 工具桥接进 DSH
 - [ ] 审批流程接入 OpenClaw 的审核 UI

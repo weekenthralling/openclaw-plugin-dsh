@@ -34,6 +34,15 @@
       "turnTimeoutMs": {
         "type": "number",
         "description": "Safety cap (ms) for one embedded DSH turn. Defaults to 900000."
+      },
+      "agentPreset": {
+        "type": "string",
+        "enum": ["standard", "code", "cordis", "minimal"],
+        "description": "DSH agent preset composed into embedded agents: standard (default, full coding toolset), code (coding-focused), cordis (standard + dynamic Cordis plugin toolset + preset-authoring skill), minimal (lean). User-authored presets under $DSH_HOME/.agent-presets/<id>/ are also accepted."
+      },
+      "allowDynamicPlugins": {
+        "type": "boolean",
+        "description": "Mount the dynamic Cordis plugin runtime (cordis_define/cordis_run/inspect/stop tools) so the embedded agent can extend itself at runtime. Defaults to true; the cordis preset exposes the tools to the model."
       }
     }
   }

@@ -23,6 +23,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { readFileSync } from "node:fs";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import { installModelSelection } from "@deepseek-ai/dsh-agent";
+import { resolveSessionPreset } from "@deepseek-ai/dsh-agent-presets";
 import type {
   DshAgentHandleLike,
   DshHost,
@@ -71,6 +72,7 @@ interface BootedServices {
   sessions: DshHost["sessions"];
   agentDefaultModel: DshHost["agentDefaultModel"];
   sessionPersistence: DshHost["sessionPersistence"];
+  agentPresets: DshHost["agentPresets"];
 }
 
 async function bootOnce(config: DshPluginConfig): Promise<DshHost> {
@@ -137,9 +139,31 @@ async function bootOnce(config: DshPluginConfig): Promise<DshHost> {
     });
   }
 
+  // Layer 4: DSH agent presets (session-level composition of tools/persona)
+  // plus the dynamic Cordis plugin runtime. Both are host-plane singletons;
+  // the shipped preset compositions live beside this plugin's profile.
+  const insertedRows: Array<Record<string, unknown>> = [
+    {
+      id: "agent-presets",
+      name: "@deepseek-ai/dsh-agent-presets",
+      config: {
+        default: config.agentPreset ?? "standard",
+        roots: [{ path: join(profileDir, "agent-presets"), trust: "system" }],
+        includeUserRoot: true,
+      },
+    },
+  ];
+  if (config.allowDynamicPlugins !== false) {
+    insertedRows.push({
+      id: "cordis-host-runner",
+      name: "@deepseek-ai/dsh-cordis-host-runner",
+    });
+  }
+  layers.push({ insert: insertedRows });
+
   log(
     `booting embedded DSH host: profile=${profileDir} dshHome=${process.env.DSH_HOME ?? "<default>"} ` +
-      `bundles=${bundles.join(",")}`,
+      `bundles=${bundles.join(",")} presets=yes dynamicPlugins=${config.allowDynamicPlugins !== false}`,
   );
   const ctx = (await bootMod.boot(
     BIN_NAME,
@@ -155,6 +179,7 @@ async function bootOnce(config: DshPluginConfig): Promise<DshHost> {
     sessions: ctx.get("sessions") as BootedServices["sessions"],
     agentDefaultModel: ctx.get("agentDefaultModel") as BootedServices["agentDefaultModel"],
     sessionPersistence: ctx.get("sessionPersistence") as BootedServices["sessionPersistence"],
+    agentPresets: ctx.get("agentPresets") as BootedServices["agentPresets"],
   };
   if (!services.agents || !services.sessions || !services.agentDefaultModel) {
     throw new Error(`${BIN_NAME}: booted DSH tree is missing core services (agents/sessions/agentDefaultModel)`);
@@ -196,18 +221,26 @@ export function resolveAgentOptions(
  * Get-or-create the DSH Agent bound to one OpenClaw session. A persisted DSH
  * session (surviving gateway restarts via $DSH_HOME/sessions) is resumed;
  * otherwise a fresh agent is created with the OpenClaw workspace as cwd.
+ *
+ * The agent's DSH preset (its tools/persona/prompt composition) is resolved
+ * once: on create from plugin config (or the preset service default), on
+ * resume from what the persisted session recorded. It is mounted into the
+ * agent scope during setup, mirroring the DSH web entry points.
  */
 export async function getOrCreateAgent(
   host: DshHost,
   openclawSessionId: string,
   cwd: string,
   agentOptions: { provider: string; model: string } | undefined,
+  config: DshPluginConfig,
 ): Promise<AgentEntry> {
   const dshId = toDshSessionId(openclawSessionId);
   const existing = agentEntries.get(dshId);
   if (existing !== undefined) return existing;
 
-  const setup = (agentCtx: unknown): void => {
+  const presets = host.agentPresets;
+
+  const makeSetup = (presetId: string | undefined) => async (agentCtx: unknown): Promise<void> => {
     // Mirror the one-shot headless runner: couple a fixed model selection into
     // the agent scope so later DSH settings changes do not split this agent's
     // provider/model surfaces mid-conversation.
@@ -217,18 +250,37 @@ export async function getOrCreateAgent(
         ? { current: undefined, assembled: undefined }
         : { current: { ...agentOptions }, assembled: undefined },
     );
+    if (presets === undefined) return;
+    try {
+      const resolved = await presets.resolve(presetId);
+      await presets.mount(agentCtx as Parameters<typeof presets.mount>[0], resolved.id);
+      log(`mounted DSH agent preset ${resolved.id} for ${dshId}`);
+    } catch (error) {
+      // A missing/invalid preset must not brick the agent: it stays on host
+      // tools and the base persona, and the failure is visible in debug logs.
+      log(`agent preset mount failed for ${dshId} (${String(error)}); continuing without preset`);
+    }
   };
 
   let resumed = false;
   let handle: DshAgentHandleLike | undefined;
+  let presetId: string | undefined = config.agentPreset;
   try {
     const inspection = await host.sessionPersistence.inspect(SessionId(dshId));
     if (inspection !== undefined) {
       log(`resuming DSH session ${dshId} for OpenClaw session ${openclawSessionId}`);
+      // The resumed session keeps the preset its history was produced under
+      // (read from the persisted log/header, like the DSH web entry points).
+      const inspected = inspection as { meta?: unknown; events?: readonly unknown[] };
+      const recorded = resolveSessionPreset({
+        header: inspected.meta,
+        events: inspected.events ?? [],
+      } as Parameters<typeof resolveSessionPreset>[0]);
+      presetId = typeof recorded === "string" && recorded !== "" ? recorded : presetId;
       handle = await host.agents.resume({
         resumeSessionId: SessionId(dshId),
         agentOptions,
-        setup,
+        setup: makeSetup(presetId),
       });
       resumed = true;
     }
@@ -239,25 +291,25 @@ export async function getOrCreateAgent(
   }
 
   if (handle === undefined) {
-    log(`creating DSH session ${dshId} for OpenClaw session ${openclawSessionId} (cwd=${cwd})`);
+    log(`creating DSH session ${dshId} for OpenClaw session ${openclawSessionId} (cwd=${cwd} preset=${presetId ?? "default"})`);
     try {
       handle = await host.agents.create({
         sessionId: SessionId(dshId),
-        meta: { cwd },
+        meta: { cwd, ...(presetId !== undefined ? { agentPreset: presetId } : {}) },
         agentOptions,
-        setup,
+        setup: makeSetup(presetId),
       });
     } catch (createError) {
       // A stored log with this id can collide with a fresh create when the
       // pre-check missed it (e.g. inspect raced a previous gateway process).
       // Fall back to resume once; anything else propagates to the attempt.
       const message = String(createError);
-      if (/persisted log|already exists|collision/i.test(message)) {
+      if (/persisted log|already owns|already exists|collision/i.test(message)) {
         log(`DSH create collided with persisted log for ${dshId}; resuming`);
         handle = await host.agents.resume({
           resumeSessionId: SessionId(dshId),
           agentOptions,
-          setup,
+          setup: makeSetup(presetId),
         });
         resumed = true;
       } else {

@@ -183,7 +183,7 @@ export function createDshHarness(): AgentHarness {
 
         const host = await ensureHost(config);
         const agentOptions = resolveAgentOptions(host, config);
-        const entry = await getOrCreateAgent(host, params.sessionId, params.workspaceDir, agentOptions);
+        const entry = await getOrCreateAgent(host, params.sessionId, params.workspaceDir, agentOptions, config);
         const agent = entry.handle.agent;
 
         return await enqueueTurn(entry, async () => {

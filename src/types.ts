@@ -20,6 +20,17 @@ export interface DshPluginConfig {
   persona?: string;
   /** Safety cap for one embedded DSH turn, in milliseconds. */
   turnTimeoutMs?: number;
+  /**
+   * DSH agent preset composed into every embedded agent (its tools, persona,
+   * prompt sections). Shipped presets: standard (default), code, cordis,
+   * minimal — plus any preset authored under $DSH_HOME/.agent-presets/<id>/.
+   */
+  agentPreset?: string;
+  /**
+   * Mount the dynamic Cordis plugin runtime (cordis_define/cordis_run/… tools
+   * via the cordis preset). Defaults to true.
+   */
+  allowDynamicPlugins?: boolean;
 }
 
 /** The narrow Cordis context slice the event bridge registers on. */
@@ -53,7 +64,7 @@ export interface DshAgentHandleLike {
 export interface DshAgentsRegistryLike {
   create(options: {
     sessionId: unknown;
-    meta?: { cwd?: string };
+    meta?: { cwd?: string; agentPreset?: string };
     agentOptions?: { provider?: string; model?: string };
     setup?: (agentCtx: DshCordisContextLike) => void | Promise<void>;
     signal?: AbortSignal;
@@ -82,6 +93,12 @@ export interface DshAgentDefaultModelLike {
   currentSelection(): { provider: string; model: string } | undefined;
 }
 
+/** The narrow DSH agent-presets service slice used by the harness. */
+export interface DshAgentPresetsLike {
+  resolve(id?: string): Promise<{ id: string }>;
+  mount(agentCtx: DshCordisContextLike, id: string): Promise<void>;
+}
+
 /** Everything the harness keeps for the embedded DSH host. */
 export interface DshHost {
   /** Root Cordis context of the booted DSH tree (duck-typed). */
@@ -93,6 +110,8 @@ export interface DshHost {
   sessions: DshSessionsLike;
   agentDefaultModel: DshAgentDefaultModelLike;
   sessionPersistence: DshPersistenceLike;
+  /** Present whenever the agent-presets row mounted (it always does). */
+  agentPresets?: DshAgentPresetsLike;
   dispose(): Promise<void>;
 }
 

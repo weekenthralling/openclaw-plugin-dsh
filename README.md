@@ -38,7 +38,9 @@ uses for its own Codex harness, now available for the DeepSeek Harness.
 | --- | --- |
 | ⚡ **Zero-latency handoff** | No subprocess, no HTTP, no websocket. The DSH host boots in-process, so each turn starts instantly. |
 | 🧠 **A real agent, not a model call** | DSH plans, runs tools, compacts, spawns subagents, and tracks goals inside one turn. |
-| 🔁 **Session continuity** | DSH sessions persist to `$DSH_HOME/sessions` and resume across gateway restarts — your conversations survive reboots. |
+| 🎭 **Agent presets per session** | `standard` / `code` / `cordis` / `minimal` compositions out of the box, plus your own presets under `$DSH_HOME/.agent-presets/<id>/` — each OpenClaw agent picks its own tools, persona, and skills. |
+| 🔌 **Self-modifying runtime** | With the `cordis` preset, the embedded agent can `cordis_define` → `cordis_run` → `cordis_stop` temporary plugins at runtime — extend itself during a conversation. |
+| 🔁 **Session continuity** | DSH sessions persist to `$DSH_HOME/sessions` and resume across gateway restarts — conversations *and their preset* survive reboots. |
 | 🛠️ **Bring your DSH config** | Model, credentials, and skills come from the DeepSeek Harness you already run. Zero credential duplication. |
 | 🧯 **Fails like a grown-up** | Aborts, timeouts, and credential errors surface as clean OpenClaw run failures — with the real DSH error message. |
 | 📦 **One dependency block** | Everything ships through npm: `@deepseek-ai/dsh-*` packages, pure JS, no native builds. |
@@ -115,6 +117,8 @@ All fields are optional, under `plugins.entries.dsh.config` in
 | `model` | DSH selection | Model id override (used with `modelProvider`) |
 | `workspaceRoot` | `$HOME` | Filesystem root the DSH sandbox treats as workspace-write |
 | `persona` | built-in persona | System-prompt persona for the embedded agent |
+| `agentPreset` | `standard` | DSH agent preset per session: `standard`, `code`, `cordis` (adds the dynamic Cordis plugin toolset), `minimal`, or a preset you authored under `$DSH_HOME/.agent-presets/<id>/` |
+| `allowDynamicPlugins` | `true` | Mount the dynamic Cordis plugin runtime (`cordis_define` / `cordis_run` / `cordis_inspect_*` / `cordis_stop`) so agents on the `cordis` preset can extend themselves at runtime |
 | `turnTimeoutMs` | `900000` | Safety cap for one embedded DSH turn |
 
 ```json5
@@ -126,12 +130,19 @@ All fields are optional, under `plugins.entries.dsh.config` in
           modelProvider: "deepseek-official",
           model: "deepseek-v4-pro",
           workspaceRoot: "/Users/me/projects",
+          agentPreset: "cordis", // self-modifying agent
         },
       },
     },
   },
 }
 ```
+
+> **Authoring your own preset**: copy a shipped composition
+> (`~/.dsh/.agent-presets/<id>/`), edit the rows, and set `agentPreset` to
+> your id — your OpenClaw agent gets exactly the tools, persona, and skills
+> you choose. The `cordis` preset ships with the
+> `editing-cordis-compositions` skill that documents this.
 
 ## Activation modes
 
@@ -158,6 +169,9 @@ Validated on `openclaw` **2026.7.1-2** + `@deepseek-ai/dsh-*` **0.1.0-rc.6**:
 | --- | --- |
 | Single turn via `dsh/deepseek-v4-pro` | ✅ answered by the embedded DSH agent |
 | Two turns across separate gateway processes | ✅ turn 2 resumed the persisted DSH session and recalled turn-1 context |
+| Agent preset (`cordis`) mounted at creation | ✅ `cordis_inspect_list` ran through OpenClaw and listed 4 host providers |
+| Dynamic plugin lifecycle in-turn | ✅ agent did `cordis_define` → `cordis_run` (plugin applied live) → `cordis_stop` |
+| Preset survives restart | ✅ resumed session re-mounted its recorded preset from the persisted log |
 | Credential failure | ✅ real DSH error surfaced as an OpenClaw run failure; clean shutdown |
 | Plugin load | ✅ `openclaw plugins inspect dsh` → loaded, hybrid-capability |
 
@@ -181,13 +195,18 @@ Validated on `openclaw` **2026.7.1-2** + `@deepseek-ai/dsh-*` **0.1.0-rc.6**:
 - DSH approval prompts have no interactive answerer in this embedding, so
   sandbox escalations fail closed unless you set
   `DSH_PERMISSION_MODE=danger-full-access` for unattended gateways.
+- Dynamic plugins that include a Client (browser) half need an approval UI;
+  in this embedding host-only packages run directly, while Client packages
+  fail closed without an interactive reviewer.
 
 ## Roadmap
 
+- [x] ClawHub distribution (`clawhub:openclaw-deepseek-harness`)
+- [x] DSH agent presets + dynamic Cordis plugin runtime
 - [ ] Map OpenClaw workspace files into the DSH agent bootstrap context
 - [ ] Optional bridge of OpenClaw tools into DSH via a scoped tool preset
 - [ ] Approvals surfaced through OpenClaw's review UI
-- [ ] npm / ClawHub distribution
+- [ ] npm distribution
 
 ## License
 
