@@ -1,13 +1,17 @@
 /**
- * Event bridge: maps DSH session events (the scoped `session/event` firehose on
- * the agent context) onto OpenClaw attempt callbacks and turn facts.
+ * Event bridge: maps DSH session events onto OpenClaw attempt callbacks and
+ * turn facts.
  *
- * DSH event shapes (verified against @deepseek-ai/dsh-session 0.1.0-rc.6):
- * - `assistant/chunk`  { turn, step, chunk: StreamChunk }        live deltas
- * - `assistant/message`{ turn, step, message, usage? }           assembled step text
- * - `tool/call`        { turn, step, callId, name, arguments }
- * - `tool/result`      { turn, step, message, error?, meta? }
- * - `turn/start` / `turn/end` { turn, reason }
+ * DSH event shapes (verified against @deepseek-ai/dsh-* 0.2.0-rc.2):
+ * - `agent/assistant-stream` (agent-scoped, emit) — live frames:
+ *   `{ type: "start" | "chunk" | "end", attemptId, revision, turn, step,
+ *   chunk?: StreamChunk, index, outcome? }`. Chunk frames are transient; the
+ *   loop commits one final `assistant/message` before the end frame.
+ * - `session/event` durable firehose (scoped on the agent context):
+ *   - `assistant/message` { turn, step, message, usage?, interrupted? }
+ *   - `tool/call`          { turn, step, callId, name, arguments }
+ *   - `tool/result`        { turn, step, message, error?, meta? }
+ *   - `turn/start` / `turn/end` { turn, reason }
  */
 import type { BridgeCallbacks, DshCordisContextLike, TurnFacts } from "./types.js";
 
@@ -49,8 +53,9 @@ interface SessionEventLike {
 }
 
 /**
- * Subscribe one listener on the agent-scoped context. `on` returns the
- * disposer (Cordis effect contract).
+ * Subscribe the bridge listeners on the agent-scoped context. `on` returns the
+ * disposer (Cordis effect contract); the agent-scoped registrations receive
+ * only this agent's `agent/assistant-stream` frames and session events.
  */
 export function attachEventBridge(
   agentCtx: DshCordisContextLike,
@@ -59,7 +64,7 @@ export function attachEventBridge(
 ): () => void {
   const pendingCalls = new Map<string, string>();
 
-  const handle = (event: SessionEventLike): void => {
+  const handleSessionEvent = (event: SessionEventLike): void => {
     const data = event.data ?? {};
     switch (event.type) {
       case "turn/start": {
@@ -70,24 +75,6 @@ export function attachEventBridge(
       }
       case "turn/end": {
         facts.turnEndReason = data.reason as TurnFacts["turnEndReason"];
-        break;
-      }
-      case "assistant/chunk": {
-        const chunk = data.chunk as {
-          type?: string;
-          text?: string;
-        };
-        if (chunk?.type === "text-delta" && typeof chunk.text === "string") {
-          if (!facts.started) {
-            facts.started = true;
-            void callbacks.onAssistantMessageStart?.();
-          }
-          facts.deltaText += chunk.text;
-          void callbacks.onPartialReply({ delta: chunk.text });
-        } else if (chunk?.type === "reasoning-delta" && typeof chunk.text === "string") {
-          facts.reasoningText += chunk.text;
-          void callbacks.onReasoningStream?.({ text: chunk.text, isReasoning: true });
-        }
         break;
       }
       case "assistant/message": {
@@ -122,18 +109,52 @@ export function attachEventBridge(
     }
   };
 
-  const listener = (_session: unknown, event: unknown): void => {
-    const candidate = event as SessionEventLike;
-    if (candidate !== null && typeof candidate === "object" && typeof candidate.type === "string") {
-      handle(candidate);
+  /** One live `agent/assistant-stream` frame (transient publication). */
+  const handleStreamFrame = (frame: {
+    type?: string;
+    chunk?: { type?: string; text?: string };
+  }): void => {
+    const chunk = frame.chunk;
+    if (frame.type !== "chunk" || chunk === undefined) return;
+    if (chunk.type === "text-delta" && typeof chunk.text === "string") {
+      if (!facts.started) {
+        facts.started = true;
+        void callbacks.onAssistantMessageStart?.();
+      }
+      facts.deltaText += chunk.text;
+      void callbacks.onPartialReply({ delta: chunk.text });
+    } else if (chunk.type === "reasoning-delta" && typeof chunk.text === "string") {
+      facts.reasoningText += chunk.text;
+      void callbacks.onReasoningStream?.({ text: chunk.text, isReasoning: true });
     }
   };
-  const disposer = agentCtx.on("session/event", listener);
+
+  const sessionListener = (_session: unknown, event: unknown): void => {
+    const candidate = event as SessionEventLike;
+    if (candidate !== null && typeof candidate === "object" && typeof candidate.type === "string") {
+      handleSessionEvent(candidate);
+    }
+  };
+
+  const streamListener = (payload: unknown): void => {
+    const candidate = payload as { frame?: { type?: string; chunk?: { type?: string; text?: string } } };
+    if (candidate !== null && typeof candidate === "object" && candidate.frame !== undefined) {
+      handleStreamFrame(candidate.frame);
+    }
+  };
+
+  const sessionDisposer = agentCtx.on("session/event", sessionListener);
+  const streamDisposer = agentCtx.on("agent/assistant-stream", streamListener);
   return () => {
     try {
-      disposer();
+      sessionDisposer();
     } catch {
-      agentCtx.off?.("session/event", listener);
+      agentCtx.off?.("session/event", sessionListener);
+    }
+    try {
+      streamDisposer();
+    } catch {
+      agentCtx.off?.("agent/assistant-stream", streamListener);
     }
   };
 }

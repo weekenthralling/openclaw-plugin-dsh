@@ -15,13 +15,18 @@
         "type": "string",
         "description": "DSH home directory ($DSH_HOME) for settings.yaml, credentials, and session persistence. Defaults to ~/.dsh, sharing the machine's existing DeepSeek Harness configuration."
       },
+      "mirrorOpenClawModel": {
+        "type": "boolean",
+        "default": true,
+        "description": "Mirror the OpenClaw-prepared provider, model, and credentials into the embedded DSH host so each turn runs the exact route configured in openclaw.json. Disable to keep the DeepSeek Harness selection (settings.yaml or deepseek-official)."
+      },
       "modelProvider": {
         "type": "string",
-        "description": "Optional DSH provider route override for embedded agents. Defaults to the DeepSeek Harness selection (settings.yaml or deepseek-official)."
+        "description": "Optional DSH provider route override for embedded agents. Only used when the OpenClaw attempt carries no concrete provider (for example a dsh/<model> ref). Defaults to the DeepSeek Harness selection."
       },
       "model": {
         "type": "string",
-        "description": "Optional DSH model id override, used together with modelProvider. Defaults to the DeepSeek Harness selection."
+        "description": "Optional DSH model id override, used together with modelProvider. Only used when the OpenClaw attempt carries no concrete provider."
       },
       "workspaceRoot": {
         "type": "string",
@@ -29,20 +34,11 @@
       },
       "persona": {
         "type": "string",
-        "description": "System-prompt persona line for the embedded DSH agent. Defaults to the built-in OpenClaw embedding persona."
+        "description": "System-prompt persona prefix for the embedded DSH agent. Defaults to the built-in OpenClaw embedding persona."
       },
       "turnTimeoutMs": {
         "type": "number",
         "description": "Safety cap (ms) for one embedded DSH turn. Defaults to 900000."
-      },
-      "agentPreset": {
-        "type": "string",
-        "enum": ["standard", "code", "cordis", "minimal"],
-        "description": "DSH agent preset composed into embedded agents: standard (default, full coding toolset), code (coding-focused), cordis (standard + dynamic Cordis plugin toolset + preset-authoring skill), minimal (lean). User-authored presets under $DSH_HOME/.agent-presets/<id>/ are also accepted."
-      },
-      "allowDynamicPlugins": {
-        "type": "boolean",
-        "description": "Mount the dynamic Cordis plugin runtime (cordis_define/cordis_run/inspect/stop tools) so the embedded agent can extend itself at runtime. Defaults to true; the cordis preset exposes the tools to the model."
       }
     }
   }

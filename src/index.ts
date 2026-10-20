@@ -31,10 +31,19 @@ type HarnessImpl = {
 };
 
 let implPromise: Promise<HarnessImpl> | undefined;
+/** True once a turn asked for the real harness (reset/compact only matter then). */
+let used = false;
 
 /** Lazily import the real harness module (first call happens post-startup). */
 function impl(): Promise<HarnessImpl> {
-  implPromise ??= import("./harness.js").then((module) => module.createDshHarness() as unknown as HarnessImpl);
+  used = true;
+  implPromise ??= import("./harness.js")
+    .then((module) => module.createDshHarness() as unknown as HarnessImpl)
+    .catch((error: unknown) => {
+      // Do not poison the plugin with a transient module-load failure.
+      implPromise = undefined;
+      throw error;
+    });
   return implPromise;
 }
 
@@ -58,15 +67,24 @@ const harness = {
   },
 
   async reset(params: unknown): Promise<void> {
+    // A session reset for a harness that never ran must not pull the whole
+    // DSH dependency tree into the gateway just to find nothing to dispose.
+    if (!used) return;
     return (await impl()).reset(params);
   },
 
   async compact(params: unknown): Promise<unknown> {
+    if (!used) return undefined;
     return (await impl()).compact(params);
   },
 
   async dispose(): Promise<void> {
-    return (await impl()).dispose();
+    // OpenClaw calls this on every unload/reload, including plugins that were
+    // loaded but never used. Do not lazily import the harness just to dispose
+    // an empty host (that import can fail or overrun the retirement budget).
+    if (implPromise === undefined) return;
+    const implementation = await implPromise.catch(() => undefined);
+    await implementation?.dispose();
   },
 };
 

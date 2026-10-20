@@ -14,23 +14,23 @@ export interface DshPluginConfig {
   modelProvider?: string;
   /** Optional DSH model id override (used with modelProvider). */
   model?: string;
+  /**
+   * Mirror the OpenClaw-resolved provider/model/credentials into the embedded
+   * DSH host (default true). Disable to keep DSH's own settings/default route.
+   * Only applies when the agent is pinned to the DSH runtime by an OpenClaw
+   * provider/model ref (i.e. not for `dsh/<model>` refs).
+   */
+  mirrorOpenClawModel?: boolean;
   /** Filesystem root for the embedded DSH sandbox workspace. */
   workspaceRoot?: string;
-  /** System-prompt persona override. */
+  /**
+   * Deployment persona prefix for the embedded agents. Composed into the
+   * `system-prompt` row's `personaPrefix` (the 0.2.0 spelling of the old
+   * `persona` field).
+   */
   persona?: string;
   /** Safety cap for one embedded DSH turn, in milliseconds. */
   turnTimeoutMs?: number;
-  /**
-   * DSH agent preset composed into every embedded agent (its tools, persona,
-   * prompt sections). Shipped presets: standard (default), code, cordis,
-   * minimal — plus any preset authored under $DSH_HOME/.agent-presets/<id>/.
-   */
-  agentPreset?: string;
-  /**
-   * Mount the dynamic Cordis plugin runtime (cordis_define/cordis_run/… tools
-   * via the cordis preset). Defaults to true.
-   */
-  allowDynamicPlugins?: boolean;
 }
 
 /** The narrow Cordis context slice the event bridge registers on. */
@@ -40,14 +40,28 @@ export interface DshCordisContextLike {
   get?(name: string): unknown;
 }
 
-/** The narrow DSH Agent slice used by the harness. */
+/** A model selection installed into one DSH agent scope. */
+export interface DshModelSelection {
+  provider: string;
+  model: string;
+}
+
+/**
+ * Mutable selection pair consumed by DSH's `installModelSelection` (the
+ * package does not re-export the type from its entry point).
+ */
+export interface DshModelSelectionRef {
+  /** Model selected for the next step that enters prompt assembly. */
+  current: DshModelSelection | undefined;
+  /** Selection captured when the current step entered prompt assembly. */
+  assembled: DshModelSelection | undefined;
+}
+
+/** The narrow DSH Agent slice used by the harness (the 0.2.0 runtime face). */
 export interface DshAgentLike {
   readonly id: unknown;
   readonly ctx: DshCordisContextLike;
-  readonly session: {
-    events: readonly any[];
-    seq: number;
-  };
+  readonly session: unknown;
   followup(message: unknown): void;
   inject?(message: unknown): void;
   whenIdle(): Promise<void>;
@@ -64,7 +78,7 @@ export interface DshAgentHandleLike {
 export interface DshAgentsRegistryLike {
   create(options: {
     sessionId: unknown;
-    meta?: { cwd?: string; agentPreset?: string };
+    meta?: { cwd?: string };
     agentOptions?: { provider?: string; model?: string };
     setup?: (agentCtx: DshCordisContextLike) => void | Promise<void>;
     signal?: AbortSignal;
@@ -80,23 +94,26 @@ export interface DshAgentsRegistryLike {
 
 /** The narrow DSH sessions service slice used by the harness. */
 export interface DshSessionsLike {
-  flush(session: { events: readonly any[]; seq: number }): Promise<boolean>;
+  flush(session: unknown): Promise<boolean>;
+}
+
+/** A persisted-session snapshot entry, as returned by the persistence `stat`. */
+export interface DshSessionSnapshotLike {
+  header?: {
+    meta?: {
+      cwd?: string;
+    };
+  };
 }
 
 /** The narrow DSH persistence slice used to detect resumable sessions. */
 export interface DshPersistenceLike {
-  inspect(id: unknown, signal?: AbortSignal): Promise<unknown>;
+  stat(id: unknown, options?: { signal?: AbortSignal }): Promise<DshSessionSnapshotLike | undefined>;
 }
 
 /** The narrow DSH default-model selection slice used by the harness. */
 export interface DshAgentDefaultModelLike {
   currentSelection(): { provider: string; model: string } | undefined;
-}
-
-/** The narrow DSH agent-presets service slice used by the harness. */
-export interface DshAgentPresetsLike {
-  resolve(id?: string): Promise<{ id: string }>;
-  mount(agentCtx: DshCordisContextLike, id: string): Promise<void>;
 }
 
 /** Everything the harness keeps for the embedded DSH host. */
@@ -110,8 +127,6 @@ export interface DshHost {
   sessions: DshSessionsLike;
   agentDefaultModel: DshAgentDefaultModelLike;
   sessionPersistence: DshPersistenceLike;
-  /** Present whenever the agent-presets row mounted (it always does). */
-  agentPresets?: DshAgentPresetsLike;
   dispose(): Promise<void>;
 }
 
@@ -139,7 +154,8 @@ export interface TurnFacts {
 
 /** Callbacks the event bridge forwards OpenClaw streaming into. */
 export interface BridgeCallbacks {
-  onPartialReply(payload: { delta?: string; text?: string; replace?: true }): void | Promise<void>;
+  /** OpenClaw 2026.10.4: returning true cancels the attempt delivery. */
+  onPartialReply(payload: { delta?: string; text?: string; replace?: true }): boolean | void | Promise<boolean | void>;
   onReasoningStream?(payload: { text: string; isReasoning?: boolean }): void | Promise<void>;
   onAssistantMessageStart?(): void | Promise<void>;
   onToolResult?(payload: { text: string }): void | Promise<void>;

@@ -1,7 +1,7 @@
 {
   "name": "openclaw-deepseek-harness",
-  "version": "0.2.0",
-  "description": "OpenClaw plugin that runs agent turns through an embedded DeepSeek Harness (DSH) agent — with DSH agent presets (standard/code/cordis/minimal) and the dynamic Cordis plugin toolset",
+  "version": "0.3.0",
+  "description": "OpenClaw plugin that runs agent turns through an embedded DeepSeek Harness (DSH) agent",
   "keywords": [
     "openclaw",
     "openclaw-plugin",
@@ -41,35 +41,28 @@
       "./dist/index.js"
     ],
     "compat": {
-      "pluginApi": ">=2026.7.1-2",
-      "minGatewayVersion": "2026.7.1-2"
+      "pluginApi": ">=2026.10.4",
+      "minGatewayVersion": "2026.10.4"
     },
     "build": {
-      "openclawVersion": "2026.7.1-2",
-      "pluginSdkVersion": "2026.7.1-2"
+      "openclawVersion": "2026.10.5",
+      "pluginSdkVersion": "2026.10.5"
     }
   },
   "dependencies": {
-    "@deepseek-ai/dsh-agent": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-agent-presets": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-app-boot": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-base": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-cordis-host-runner": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-llm": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-persona": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-session": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-terminal": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-terminal-bash": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-tool-ask-user": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-tool-bash-persistent": "0.1.0-rc.6",
-    "@deepseek-ai/dsh-tool-cordis": "0.1.0-rc.6"
+    "@deepseek-ai/dsh-agent": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-app-boot": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-base": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-launch-environment": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-session": "0.2.0-rc.2"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.7.1-2"
+    "openclaw": ">=2026.10.4"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",
-    "openclaw": "2026.7.1-2",
+    "openclaw": "2026.10.5",
     "typescript": "^5.9.0"
   }
 }

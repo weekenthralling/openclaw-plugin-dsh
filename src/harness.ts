@@ -2,7 +2,9 @@
  * The `dsh` OpenClaw agent harness: each prepared OpenClaw agent turn runs
  * through the embedded DeepSeek Harness agent bound to the OpenClaw session.
  *
- * Contract notes (verified against openclaw 2026.7.1-2 dist typings):
+ * Contract notes (verified against openclaw 2026.10.5 dist typings):
+ * - Implements AgentHarnessV2: core always supplies hostCapabilities to
+ *   plugin harnesses, so the versioned attempt params are the honest contract.
  * - Selection: `auto` policy asks supports() per provider/model; a pinned
  *   `agentRuntime.id: "dsh"` forces this harness by id and still consults
  *   supports(). Claiming provider `dsh` covers `dsh/<model>` refs.
@@ -12,8 +14,13 @@
  * - A thrown error inside runAttempt surfaces as a hard run failure with no
  *   embedded fallback, so every DSH failure is converted into a structured
  *   promptError result instead of escaping.
+ *
+ * DSH 0.2.0 note: turn failures arrive as `turn/end` with
+ * `reason.kind === "error"` carrying the structured `LlmFailure` in
+ * `reason.error` (message/code facts, flattened to UNKNOWN otherwise).
  */
-import type { AgentHarness, AgentHarnessAttemptResult } from "openclaw/plugin-sdk/agent-harness";
+import type { AgentHarnessV2 } from "openclaw/plugin-sdk/agent-harness";
+import type { AgentHarnessAttemptResult } from "openclaw/plugin-sdk/agent-harness-runtime";
 import {
   awaitAgentEndSideEffects,
   classifyAgentHarnessTerminalOutcome,
@@ -27,7 +34,9 @@ import {
   enqueueTurn,
   getOrCreateAgent,
   resolveAgentOptions,
+  selectAgentModel,
 } from "./host.js";
+import { attemptSelectionFor, loadModelMirror } from "./openclaw-model.js";
 import { attachEventBridge, createTurnFacts } from "./events.js";
 import type { DshPluginConfig } from "./types.js";
 
@@ -138,7 +147,7 @@ function failedAttemptResult(params: {
   });
 }
 
-export function createDshHarness(): AgentHarness {
+export function createDshHarness(): AgentHarnessV2 {
   return {
     id: HARNESS_ID,
     label: "DeepSeek Harness (DSH) agent harness",
@@ -181,8 +190,16 @@ export function createDshHarness(): AgentHarness {
           });
         }
 
-        const host = await ensureHost(config);
-        const agentOptions = resolveAgentOptions(host, config);
+        const mirror =
+          config.mirrorOpenClawModel === false ? undefined : await loadModelMirror(params);
+        const host = await ensureHost(config, mirror);
+        // The mirror is boot-scoped (cached), so resolve this attempt's exact
+        // selection independently: model fallbacks can change it per attempt.
+        const attemptSelection =
+          mirror !== undefined && provider !== HARNESS_ID && modelId !== ""
+            ? attemptSelectionFor(mirror, provider, modelId)
+            : undefined;
+        const agentOptions = resolveAgentOptions(host, config, attemptSelection);
         const entry = await getOrCreateAgent(host, params.sessionId, params.workspaceDir, agentOptions, config);
         const agent = entry.handle.agent;
 
@@ -214,6 +231,10 @@ export function createDshHarness(): AgentHarness {
           timeoutHandle.unref?.();
 
           try {
+            // Apply the route OpenClaw prepared for this attempt. Assigning the
+            // mutable selection takes effect when the next step enters prompt
+            // assembly; an in-flight step keeps its captured provider/model.
+            selectAgentModel(entry, agentOptions);
             if (params.extraSystemPrompt && params.extraSystemPrompt.trim() !== "") {
               agent.inject?.(createUserMessage({
                 content: [{ type: "text", text: params.extraSystemPrompt }],

@@ -5,8 +5,8 @@
 **Give your OpenClaw the brain of DeepSeek Harness — one model ref away.**
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![OpenClaw](https://img.shields.io/badge/OpenClaw-2026.7.1--2-222222)](https://docs.openclaw.ai)
-[![DeepSeek Harness](https://img.shields.io/badge/DeepSeek_Harness-0.1.0--rc.6-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
+[![OpenClaw](https://img.shields.io/badge/OpenClaw-2026.10.5-222222)](https://docs.openclaw.ai)
+[![DeepSeek Harness](https://img.shields.io/badge/DeepSeek_Harness-0.2.0--rc.2-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 [![Author](https://img.shields.io/badge/written_by-DeepSeek_V4_Pro-8A2BE2)](https://api-docs.deepseek.com)
 
 > **Written entirely by DeepSeek V4 Pro** — every line of this plugin was
@@ -18,11 +18,14 @@
 
 `openclaw-plugin-dsh` replaces the turn executor inside OpenClaw with an
 **embedded DeepSeek Harness (DSH) agent**. When a session routes to a
-`dsh/...` model ref, your message no longer goes through OpenClaw's
-provider transport — it is handed to a live DSH Agent running **in the same
-process**, with the full DeepSeek Harness stack underneath:
+`dsh/...` model ref, or pins an existing provider/model entry to the `dsh`
+runtime, your message no longer goes through OpenClaw's provider transport —
+it is handed to a live DSH Agent running **in the same process**, with the
+full DeepSeek Harness stack underneath:
 
-- its own model route and reasoning effort (from your DSH `settings.yaml`),
+- a model route mirrored from OpenClaw's prepared attempt when pinned to a
+  concrete model, or DSH's own selection (your `settings.yaml`) for
+  `dsh/...` refs,
 - its own tools — bash, file search, editing, subagents, workflows, goals,
   web search, and more,
 - its own session persistence and compaction,
@@ -38,9 +41,7 @@ uses for its own Codex harness, now available for the DeepSeek Harness.
 | --- | --- |
 | ⚡ **Zero-latency handoff** | No subprocess, no HTTP, no websocket. The DSH host boots in-process, so each turn starts instantly. |
 | 🧠 **A real agent, not a model call** | DSH plans, runs tools, compacts, spawns subagents, and tracks goals inside one turn. |
-| 🎭 **Agent presets per session** | `standard` / `code` / `cordis` / `minimal` compositions out of the box, plus your own presets under `$DSH_HOME/.agent-presets/<id>/` — each OpenClaw agent picks its own tools, persona, and skills. |
-| 🔌 **Self-modifying runtime** | With the `cordis` preset, the embedded agent can `cordis_define` → `cordis_run` → `cordis_stop` temporary plugins at runtime — extend itself during a conversation. |
-| 🔁 **Session continuity** | DSH sessions persist to `$DSH_HOME/sessions` and resume across gateway restarts — conversations *and their preset* survive reboots. |
+| 🔁 **Session continuity** | DSH sessions persist to `$DSH_HOME/sessions` and resume across gateway restarts. |
 | 🛠️ **Bring your DSH config** | Model, credentials, and skills come from the DeepSeek Harness you already run. Zero credential duplication. |
 | 🧯 **Fails like a grown-up** | Aborts, timeouts, and credential errors surface as clean OpenClaw run failures — with the real DSH error message. |
 | 📦 **One dependency block** | Everything ships through npm: `@deepseek-ai/dsh-*` packages, pure JS, no native builds. |
@@ -64,6 +65,13 @@ That's it. `dsh/<any-model-id>` refs are accepted — the actual model is
 chosen by the DeepSeek Harness itself (its `agent-default-model` route),
 so you never maintain a second model catalog.
 
+Prefer to keep using a provider/model entry that is already configured in
+`openclaw.json`? Pin that entry to the `dsh` runtime instead (activation
+mode B below). The plugin then mirrors OpenClaw's prepared provider, model,
+base URL, headers, and auth into the embedded host, so every turn runs
+exactly the route OpenClaw resolved — including model fallbacks — with the
+credentials OpenClaw already has.
+
 ## How it works
 
 ```
@@ -85,7 +93,8 @@ OpenClaw gateway process
 │   │   │ session │  │ session │  │            │  │             │
 │   │   └─────────┘  └─────────┘  └────────────┘  │             │
 │   └───────────────────────┬─────────────────────┘             │
-│                           │ session/event firehose             │
+│                           │ agent/assistant-stream frames     │
+│                           │ + session/event durable events    │
 │   streaming deltas · reasoning · tool results ───────────────▶ │
 │                          reply pipeline                        │
 └───────────────────────────────────────────────────────────────┘
@@ -93,14 +102,21 @@ OpenClaw gateway process
 
 1. **Boot once.** On the first claimed attempt, the plugin boots one DSH
    core tree (the `dsh-base` profile bundle plus a small patch layer:
-   HMR off, persona, sandbox root) through `@deepseek-ai/dsh-app-boot`.
+   HMR off, persona prefix, sandbox root) through
+   `@deepseek-ai/dsh-app-boot`. If the attempt carries a concrete OpenClaw
+   provider, the patch layer also declares `llm-pi-ai` routes translated
+   from `models.providers`; resolved keys are frozen into DSH's
+   launch-environment snapshot and are never exported to tool child
+   processes.
 2. **One Agent per OpenClaw session.** Each OpenClaw session maps to a
    stable DSH session id (`oc-<session-id>`). First use creates the Agent;
-   later gateway processes resume the persisted DSH session from disk.
+   later gateway processes detect the persisted log via
+   `sessionPersistence.stat` and resume it.
 3. **Bridge the turn.** The user prompt enters via `agent.followup(...)`;
-   the scoped `session/event` firehose maps `assistant/chunk` deltas to
-   `onPartialReply`, reasoning to `onReasoningStream`, tool results to
-   `onToolResult`, and assembled messages to the attempt result.
+   live `agent/assistant-stream` frames map `text-delta` chunks to
+   `onPartialReply` and `reasoning-delta` to `onReasoningStream`, while the
+   scoped `session/event` firehose supplies assembled `assistant/message`
+   (with usage), `tool/call`, `tool/result`, and `turn/start`/`turn/end`.
 4. **Stay reversible.** Abort signals and the turn timeout cancel the DSH
    agent; `sessions.flush` persists before the attempt resolves; `/new`
    disposes the session's Agent; plugin unload disposes the whole host.
@@ -113,12 +129,11 @@ All fields are optional, under `plugins.entries.dsh.config` in
 | Field | Default | Meaning |
 | --- | --- | --- |
 | `dshHome` | `~/.dsh` | `$DSH_HOME` for settings, credentials, and session persistence |
-| `modelProvider` | DSH selection | Provider route override for embedded agents |
-| `model` | DSH selection | Model id override (used with `modelProvider`) |
+| `mirrorOpenClawModel` | `true` | Mirror the attempt's OpenClaw provider/model/auth into the embedded host; set `false` to keep DSH's own selection |
+| `modelProvider` | DSH selection | Provider route override for `dsh/<model>` refs (ignored when the attempt carries a concrete OpenClaw provider) |
+| `model` | DSH selection | Model id override for `dsh/<model>` refs (used with `modelProvider`) |
 | `workspaceRoot` | `$HOME` | Filesystem root the DSH sandbox treats as workspace-write |
-| `persona` | built-in persona | System-prompt persona for the embedded agent |
-| `agentPreset` | `standard` | DSH agent preset per session: `standard`, `code`, `cordis` (adds the dynamic Cordis plugin toolset), `minimal`, or a preset you authored under `$DSH_HOME/.agent-presets/<id>/` |
-| `allowDynamicPlugins` | `true` | Mount the dynamic Cordis plugin runtime (`cordis_define` / `cordis_run` / `cordis_inspect_*` / `cordis_stop`) so agents on the `cordis` preset can extend themselves at runtime |
+| `persona` | built-in persona | System-prompt persona prefix for the embedded agent |
 | `turnTimeoutMs` | `900000` | Safety cap for one embedded DSH turn |
 
 ```json5
@@ -130,7 +145,6 @@ All fields are optional, under `plugins.entries.dsh.config` in
           modelProvider: "deepseek-official",
           model: "deepseek-v4-pro",
           workspaceRoot: "/Users/me/projects",
-          agentPreset: "cordis", // self-modifying agent
         },
       },
     },
@@ -138,11 +152,10 @@ All fields are optional, under `plugins.entries.dsh.config` in
 }
 ```
 
-> **Authoring your own preset**: copy a shipped composition
-> (`~/.dsh/.agent-presets/<id>/`), edit the rows, and set `agentPreset` to
-> your id — your OpenClaw agent gets exactly the tools, persona, and skills
-> you choose. The `cordis` preset ships with the
-> `editing-cordis-compositions` skill that documents this.
+With the default `mirrorOpenClawModel: true`, an agent pinned to a concrete
+OpenClaw model ignores `modelProvider`/`model` — the prepared OpenClaw route
+always wins. Those overrides only apply to `dsh/<model>` refs. Set
+`mirrorOpenClawModel: false` to opt out and let DSH choose in every case.
 
 ## Activation modes
 
@@ -163,23 +176,26 @@ All fields are optional, under `plugins.entries.dsh.config` in
 
 ## Verified end to end
 
-Validated on `openclaw` **2026.7.1-2** + `@deepseek-ai/dsh-*` **0.1.0-rc.6**:
+Validated on `openclaw` **2026.10.5** + `@deepseek-ai/dsh-*` **0.2.0-rc.2**
+(smoke runs against the real embedded host; `dsh/<model>` turns use DSH
+credentials, while harness-pinned OpenClaw routes use OpenClaw's own auth):
 
 | Scenario | Result |
 | --- | --- |
-| Single turn via `dsh/deepseek-v4-pro` | ✅ answered by the embedded DSH agent |
-| Two turns across separate gateway processes | ✅ turn 2 resumed the persisted DSH session and recalled turn-1 context |
-| Agent preset (`cordis`) mounted at creation | ✅ `cordis_inspect_list` ran through OpenClaw and listed 4 host providers |
-| Dynamic plugin lifecycle in-turn | ✅ agent did `cordis_define` → `cordis_run` (plugin applied live) → `cordis_stop` |
-| Preset survives restart | ✅ resumed session re-mounted its recorded preset from the persisted log |
-| Credential failure | ✅ real DSH error surfaced as an OpenClaw run failure; clean shutdown |
-| Plugin load | ✅ `openclaw plugins inspect dsh` → loaded, hybrid-capability |
+| Embedded DSH host boot | ✅ dsh-base tree boots in-process; `agents`/`sessions`/`agentDefaultModel`/`sessionPersistence` all present |
+| Agent create + drive surface | ✅ `followup`/`whenIdle`/`cancel` present on the runtime face; default model resolved from `agent-default-model` |
+| Session persistence + resume | ✅ `flush` → `stat` round-trip; second open resumes the persisted session |
+| Event bridge | ✅ `agent/assistant-stream` frames and durable `session/event` events reach the bridge |
+| OpenClaw model mirror | ✅ agent pinned to a provider/model from `openclaw.json` replied `pong`; the execution trace recorded that exact provider/model as the winner, with OpenClaw's auth profile |
+| Credential failure | ✅ real DSH error (`MISSING_CREDENTIAL`) surfaces as a structured turn failure for OpenClaw to report |
+| Plugin load | ✅ `openclaw plugins inspect dsh` → loaded |
 
 ## Troubleshooting
 
 | Symptom | Fix |
 | --- | --- |
 | `no API key for provider route ...` | Configure DSH credentials (`~/.dsh/.credentials.yaml` via the DSH web Models page) or export `DEEPSEEK_API_KEY` in the gateway environment |
+| `Plugin dsh was reloaded or disabled; use its current tools.` repeating every 60s | The gateway failed to hot-swap the plugin (a reload/rollback could not republish its model runtime). Restart the gateway; install or reload the plugin while the gateway is idle |
 | `plugins.allow` warning | Add `"dsh"` to `plugins.allow` in `openclaw.json` |
 | Nothing happens / want visibility | Run the gateway with `OPENCLAW_DSH_DEBUG=1` |
 
@@ -195,16 +211,23 @@ Validated on `openclaw` **2026.7.1-2** + `@deepseek-ai/dsh-*` **0.1.0-rc.6**:
 - DSH approval prompts have no interactive answerer in this embedding, so
   sandbox escalations fail closed unless you set
   `DSH_PERMISSION_MODE=danger-full-access` for unattended gateways.
-- Dynamic plugins that include a Client (browser) half need an approval UI;
-  in this embedding host-only packages run directly, while Client packages
-  fail closed without an interactive reviewer.
+
+### Removed in 0.3.0 (DSH 0.2.0 dropped the underlying core)
+
+The 0.1.x-era `agentPreset` (standard/code/cordis/minimal) and
+`allowDynamicPlugins` (dynamic Cordis plugin runtime) features are gone:
+the DSH 0.2.0 core removed the agent-presets service entirely, and its
+plugin-manager toolset requires a profile context the embedded host does
+not have. The `dsh-base` bundle now ships the full toolset to every
+embedded agent. If you relied on either feature, stay on plugin 0.2.0 with
+DSH 0.1.0-rc.6.
 
 ## Roadmap
 
 - [x] ClawHub distribution (`clawhub:openclaw-deepseek-harness`)
-- [x] DSH agent presets + dynamic Cordis plugin runtime
+- [x] OpenClaw 2026.10.5 + DSH 0.2.0-rc.2
 - [ ] Map OpenClaw workspace files into the DSH agent bootstrap context
-- [ ] Optional bridge of OpenClaw tools into DSH via a scoped tool preset
+- [ ] Optional bridge of OpenClaw tools into DSH via a scoped tool row
 - [ ] Approvals surfaced through OpenClaw's review UI
 - [ ] npm distribution
 

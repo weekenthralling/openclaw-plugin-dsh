@@ -8,9 +8,11 @@
 - id: hmr
   disabled: true
 
-# Deployment persona for agents created by this embedded host.
+# Deployment persona prefix for agents created by this embedded host.
+# (0.2.0: the system-prompt row spells this personaPrefix; the runtime boot
+# layers operator config over this file, so these values are the defaults.)
 - id: system-prompt
   config:
-    persona: >-
+    personaPrefix: >-
       You are the DeepSeek Harness agent embedded inside OpenClaw. Your working
       directory is {{cwd}}.
