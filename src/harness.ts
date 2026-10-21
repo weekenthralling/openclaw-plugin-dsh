@@ -24,6 +24,7 @@ import type { AgentHarnessAttemptResult } from "openclaw/plugin-sdk/agent-harnes
 import {
   awaitAgentEndSideEffects,
   classifyAgentHarnessTerminalOutcome,
+  emitAgentEvent,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import {
@@ -214,6 +215,37 @@ export function createDshHarness(): AgentHarnessV2 {
             onReasoningStream: (payload) => params.onReasoningStream?.({ ...payload, text: payload.text }),
             onAssistantMessageStart: () => params.onAssistantMessageStart?.(),
             onToolResult: (payload) => params.onToolResult?.(payload),
+            // The Control UI's live text is driven by global agent events;
+            // `onPartialReply` only feeds channel presentation. Mirror the
+            // native harness: publish a cumulative-text snapshot per chunk.
+            onAssistantStream: (payload) => {
+              const data: Record<string, unknown> = {
+                itemId: payload.itemId,
+                text: payload.text,
+                delta: payload.delta,
+                replaceable: true,
+                ...(payload.replace === true ? { replace: true } : {}),
+              };
+              try {
+                emitAgentEvent({
+                  runId: params.runId,
+                  ...(params.sessionKey !== undefined && params.sessionKey !== ""
+                    ? { sessionKey: params.sessionKey }
+                    : {}),
+                  stream: "assistant",
+                  data,
+                });
+              } catch (error) {
+                log(`assistant agent event failed: ${String(error)}`);
+              }
+              try {
+                void Promise.resolve(params.onAgentEvent?.({ stream: "assistant", data })).catch(
+                  (error: unknown) => log(`assistant agent event handler failed: ${String(error)}`),
+                );
+              } catch (error) {
+                log(`assistant agent event handler failed: ${String(error)}`);
+              }
+            },
           }, facts);
 
           const abortListener = (): void => {

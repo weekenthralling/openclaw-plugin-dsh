@@ -5,14 +5,26 @@
  * DSH event shapes (verified against @deepseek-ai/dsh-* 0.2.0-rc.2):
  * - `agent/assistant-stream` (agent-scoped, emit) — live frames:
  *   `{ type: "start" | "chunk" | "end", attemptId, revision, turn, step,
- *   chunk?: StreamChunk, index, outcome? }`. Chunk frames are transient; the
- *   loop commits one final `assistant/message` before the end frame.
+ *   chunk?: StreamChunk, index, outcome? }`. One opening `start` is published
+ *   per model call attempt; a retried step opens another `start` with the same
+ *   turn/step. Chunk frames are transient; the loop commits one final
+ *   `assistant/message` before the end frame.
  * - `session/event` durable firehose (scoped on the agent context):
  *   - `assistant/message` { turn, step, message, usage?, interrupted? }
  *   - `tool/call`          { turn, step, callId, name, arguments }
  *   - `tool/result`        { turn, step, message, error?, meta? }
  *   - `turn/start` / `turn/end` { turn, reason }
+ *
+ * Streaming contract for OpenClaw 2026.10.5 (verified against dist):
+ * - `onPartialReply` must carry cumulative `text`; the embedded presentation
+ *   path reads `payload.text` only and drops delta-only payloads.
+ * - The Control UI's live text is driven by global agent events
+ *   (`{stream: "assistant", data: {itemId, text, delta, replace?}}`), so the
+ *   bridge also forwards every snapshot through `onAssistantStream`.
+ * - Text is cumulative within one assistant message (one turn step) and
+ *   restarts at each new message, mirroring the native harness stream.
  */
+import { randomUUID } from "node:crypto";
 import type { BridgeCallbacks, DshCordisContextLike, TurnFacts } from "./types.js";
 
 const TOOL_RESULT_PREVIEW_CHARS = 400;
@@ -64,6 +76,16 @@ export function attachEventBridge(
 ): () => void {
   const pendingCalls = new Map<string, string>();
 
+  // Live assistant-text bookkeeping. DSH frames one assistant message per
+  // turn step; a failed model call retries the same step with a fresh
+  // `start` frame, whose partial text must replace the failed attempt's.
+  const streamId = randomUUID();
+  let streamItemIndex = 0;
+  let streamItemId = `${streamId}:0`;
+  let streamMessageKey: string | undefined;
+  let streamText = "";
+  let streamReplacePending = false;
+
   const handleSessionEvent = (event: SessionEventLike): void => {
     const data = event.data ?? {};
     switch (event.type) {
@@ -112,17 +134,50 @@ export function attachEventBridge(
   /** One live `agent/assistant-stream` frame (transient publication). */
   const handleStreamFrame = (frame: {
     type?: string;
+    turn?: unknown;
+    step?: unknown;
     chunk?: { type?: string; text?: string };
   }): void => {
+    const type = frame.type;
+    if (type === "start") {
+      // DSH always stamps turn/step; without them no retry can be recognized.
+      const messageKey =
+        typeof frame.turn === "number" && typeof frame.step === "number"
+          ? `${frame.turn}:${frame.step}`
+          : undefined;
+      // A second start for the same step is a retried model call: restart the
+      // message content instead of appending to the failed attempt's text.
+      streamReplacePending = messageKey !== undefined && messageKey === streamMessageKey;
+      streamMessageKey = messageKey;
+      streamItemIndex += 1;
+      streamItemId = `${streamId}:${streamItemIndex}`;
+      streamText = "";
+      if (streamReplacePending) facts.deltaText = "";
+      return;
+    }
     const chunk = frame.chunk;
-    if (frame.type !== "chunk" || chunk === undefined) return;
-    if (chunk.type === "text-delta" && typeof chunk.text === "string") {
+    if (type !== "chunk" || chunk === undefined) return;
+    if (chunk.type === "text-delta" && typeof chunk.text === "string" && chunk.text !== "") {
       if (!facts.started) {
         facts.started = true;
         void callbacks.onAssistantMessageStart?.();
       }
       facts.deltaText += chunk.text;
-      void callbacks.onPartialReply({ delta: chunk.text });
+      streamText += chunk.text;
+      const replace = streamReplacePending;
+      streamReplacePending = false;
+      const delta = replace ? "" : chunk.text;
+      void callbacks.onPartialReply({
+        text: streamText,
+        delta,
+        ...(replace ? { replace: true as const } : {}),
+      });
+      callbacks.onAssistantStream?.({
+        itemId: streamItemId,
+        text: streamText,
+        delta,
+        ...(replace ? { replace: true as const } : {}),
+      });
     } else if (chunk.type === "reasoning-delta" && typeof chunk.text === "string") {
       facts.reasoningText += chunk.text;
       void callbacks.onReasoningStream?.({ text: chunk.text, isReasoning: true });

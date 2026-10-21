@@ -152,6 +152,24 @@ export interface TurnFacts {
   completedToolResults: number;
 }
 
+/**
+ * One live assistant-text snapshot published for UI consumers. `text` is
+ * cumulative within the assistant message being streamed; `delta` is the
+ * chunk that produced the snapshot. A snapshot with `replace` restarts the
+ * message content (a retried model call), so consumers must discard the
+ * previous text for `itemId`.
+ */
+export interface AssistantStreamUpdate {
+  /** Stable identity of the assistant message currently streaming. */
+  itemId: string;
+  /** Cumulative text of that assistant message so far. */
+  text: string;
+  /** The chunk text that produced this snapshot ("" on a replace). */
+  delta: string;
+  /** Restart the streamed content instead of appending to it. */
+  replace?: true;
+}
+
 /** Callbacks the event bridge forwards OpenClaw streaming into. */
 export interface BridgeCallbacks {
   /** OpenClaw 2026.10.4: returning true cancels the attempt delivery. */
@@ -159,4 +177,10 @@ export interface BridgeCallbacks {
   onReasoningStream?(payload: { text: string; isReasoning?: boolean }): void | Promise<void>;
   onAssistantMessageStart?(): void | Promise<void>;
   onToolResult?(payload: { text: string }): void | Promise<void>;
+  /**
+   * Live assistant-text snapshots for the OpenClaw agent event bus. The
+   * Control UI's streaming text is driven by these events, not by
+   * `onPartialReply` (which feeds channel presentation instead).
+   */
+  onAssistantStream?(payload: AssistantStreamUpdate): void;
 }
