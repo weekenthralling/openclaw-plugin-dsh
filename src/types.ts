@@ -139,7 +139,7 @@ export interface TurnFacts {
   /** Live reasoning deltas joined. */
   reasoningText: string;
   /** Tool-call bookkeeping for the attempt result. */
-  toolMetas: Array<{ toolName: string; meta?: string }>;
+  toolMetas: Array<{ toolName: string; toolCallId?: string; isError?: boolean; meta?: string }>;
   /** Latest turn-end reason, if observed. */
   turnEndReason: { kind: string } | undefined;
   /** Latest usage observed on an assembled assistant message. */
@@ -170,6 +170,28 @@ export interface AssistantStreamUpdate {
   replace?: true;
 }
 
+/**
+ * One live tool-call update for the OpenClaw agent event bus. Emitted as
+ * `{stream: "tool", data: {...}}`; the Control UI builds its tool cards from
+ * the call id, phase, name, args and result carried here.
+ */
+export interface ToolStreamUpdate {
+  /** `start` when the call is dispatched, `result` when it settles. */
+  phase: "start" | "result";
+  /** DSH call id; the UI keys its tool card by this value. */
+  toolCallId: string;
+  /** Tool name as reported by DSH. */
+  name: string;
+  /** Parsed JSON arguments (start only). */
+  args?: unknown;
+  /** Text result (result only). */
+  result?: string;
+  /** Whether the tool invocation failed (result only). */
+  isError?: boolean;
+  /** Optional tool-result metadata reported by DSH (result only). */
+  meta?: unknown;
+}
+
 /** Callbacks the event bridge forwards OpenClaw streaming into. */
 export interface BridgeCallbacks {
   /** OpenClaw 2026.10.4: returning true cancels the attempt delivery. */
@@ -177,6 +199,12 @@ export interface BridgeCallbacks {
   onReasoningStream?(payload: { text: string; isReasoning?: boolean }): void | Promise<void>;
   onAssistantMessageStart?(): void | Promise<void>;
   onToolResult?(payload: { text: string }): void | Promise<void>;
+  /**
+   * Live tool-call updates for the OpenClaw agent event bus. The Control UI
+   * builds tool cards from these events; `onToolResult` only feeds channel
+   * progress text.
+   */
+  onToolEvent?(payload: ToolStreamUpdate): void;
   /**
    * Live assistant-text snapshots for the OpenClaw agent event bus. The
    * Control UI's streaming text is driven by these events, not by

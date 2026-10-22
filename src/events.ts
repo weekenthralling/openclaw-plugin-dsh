@@ -23,11 +23,169 @@
  *   bridge also forwards every snapshot through `onAssistantStream`.
  * - Text is cumulative within one assistant message (one turn step) and
  *   restarts at each new message, mirroring the native harness stream.
+ * - Tool calls are published as `{stream: "tool", data: {phase, name,
+ *   toolCallId, args?, result?, isError?, meta?}}`; the Control UI's tool cards
+ *   are built from these events (and they are only delivered to clients that
+ *   advertised the `tool-events` capability). `toolMetas` alone only feeds
+ *   the attempt result, not the page.
+ * - Tool activity items are published as `{stream: "item", data: {kind:
+ *   "tool", itemId, toolCallId, name, phase, title, status, meta?,
+ *   commandBearing}}`, mirroring the native harness's
+ *   `projectAgentToolActivity`; the Control UI renders the descriptive tool
+ *   title line and terminal icon from these events, not from `stream:"tool"`.
+ * - The same durable events are mirrored into OpenClaw's transcript by the
+ *   transcript observer (see transcript.ts), so tool calls survive a refresh.
  */
 import { randomUUID } from "node:crypto";
 import type { BridgeCallbacks, DshCordisContextLike, TurnFacts } from "./types.js";
+import { argumentsRecord, normalizeDshUsage, type TranscriptObserver } from "./transcript.js";
 
 const TOOL_RESULT_PREVIEW_CHARS = 400;
+/** Native harness caps live tool-result text at 8k chars before publishing. */
+const TOOL_RESULT_EVENT_MAX_CHARS = 8000;
+
+/**
+ * Compact display facts for one tool invocation, mirroring OpenClaw's
+ * `tool-display` projection: a label, a one-line meta describing the
+ * invocation, and whether the call carries a command (terminal icon in the
+ * Control UI). DSH tools carry a model-generated `description` argument
+ * ("shown in the UI", required for bash/pwsh) — it is preferred, exactly like
+ * the native harness prefers the tool's own presentation metadata; the
+ * arg-derived keys (command, path, …) are the fallback for tools without one.
+ */
+export interface ToolDisplay {
+  label: string;
+  /** Compact invocation summary, e.g. the command for a bash call. */
+  meta?: string;
+  /** Shell-family tools (or any tool with a `command` argument). */
+  commandBearing: boolean;
+}
+
+/** Label + detail keys per tool, mirroring openclaw's TOOL_DISPLAY_CONFIG. */
+const TOOL_DISPLAY_TABLE: Record<string, { label: string; detailKeys: string[] }> = {
+  bash: { label: "Bash", detailKeys: ["command"] },
+  exec: { label: "Exec", detailKeys: ["command"] },
+  shell: { label: "Shell", detailKeys: ["command"] },
+  terminal: { label: "Terminal", detailKeys: ["command"] },
+  read: { label: "Read", detailKeys: ["path", "file_path"] },
+  write: { label: "Write", detailKeys: ["path", "file_path"] },
+  edit: { label: "Edit", detailKeys: ["path", "file_path"] },
+  web_search: { label: "Web Search", detailKeys: ["query", "queries"] },
+  web_fetch: { label: "Web Fetch", detailKeys: ["url"] },
+};
+
+/** Native fallback detail keys for tools without a display spec. */
+const FALLBACK_DETAIL_KEYS = [
+  "command",
+  "path",
+  "file_path",
+  "url",
+  "targetUrl",
+  "targetId",
+  "ref",
+  "element",
+  "node",
+  "nodeId",
+  "id",
+  "requestId",
+  "to",
+  "channelId",
+  "guildId",
+  "userId",
+  "name",
+  "query",
+  "pattern",
+  "messageId",
+];
+
+const TOOL_META_MAX_CHARS = 200;
+
+function displayLabel(name: string): string {
+  const spec = TOOL_DISPLAY_TABLE[name.trim().toLowerCase()];
+  if (spec !== undefined) return spec.label;
+  const words = name.trim().replace(/_+/g, " ").replace(/\s+/g, " ");
+  return words === ""
+    ? "Tool"
+    : words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+function firstStringArg(args: unknown, keys: string[]): string | undefined {
+  if (args === null || typeof args !== "object" || Array.isArray(args)) return undefined;
+  const record = args as Record<string, unknown>;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim() !== "") return value;
+    // Array-valued arguments (e.g. DSH web_search `queries`): use the first
+    // non-empty string entry as the display detail.
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        if (typeof item === "string" && item.trim() !== "") return item;
+      }
+    }
+  }
+  return undefined;
+}
+
+/** One-line invocation summary, whitespace-collapsed like the native display. */
+function collapseMeta(raw: string): string {
+  const text = raw.replace(/\s+/g, " ").trim();
+  const home = process.env.HOME;
+  const short =
+    home !== undefined && home !== "" && text.startsWith(`${home}/`)
+      ? `~${text.slice(home.length)}`
+      : home !== undefined && text === home
+        ? "~"
+        : text;
+  return short.length > TOOL_META_MAX_CHARS ? `${short.slice(0, TOOL_META_MAX_CHARS)}…` : short;
+}
+
+/** Label/meta/command-bearing facts for a DSH tool invocation. */
+export function toolDisplayFor(name: string, args: unknown): ToolDisplay {
+  const key = name.trim().toLowerCase();
+  const spec = TOOL_DISPLAY_TABLE[key];
+  const command = firstStringArg(args, ["command"]);
+  const commandBearing =
+    key === "bash" || key === "exec" || key === "shell" || command !== undefined;
+  const raw =
+    firstStringArg(args, ["description"]) ??
+    (spec !== undefined
+      ? firstStringArg(args, spec.detailKeys)
+      : firstStringArg(args, FALLBACK_DETAIL_KEYS));
+  return {
+    label: displayLabel(name),
+    ...(raw === undefined ? {} : { meta: collapseMeta(raw) }),
+    commandBearing,
+  };
+}
+
+/**
+ * Parse DSH's JSON-encoded tool arguments for the live tool card. The Control
+ * UI titles a bash card from `args.title` (command only as fallback), so
+ * DSH's model-generated `description` is surfaced as `title` (see
+ * argumentsRecord).
+ */
+function parseToolArguments(value: unknown): unknown {
+  if (typeof value !== "string") {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) return value;
+    const record = value as Record<string, unknown>;
+    const description = record.description;
+    if (
+      typeof description === "string" &&
+      description.trim() !== "" &&
+      (typeof record.title !== "string" || record.title.trim() === "")
+    ) {
+      return { ...record, title: description };
+    }
+    return value;
+  }
+  const text = value.trim();
+  if (text === "") return undefined;
+  try {
+    return argumentsRecord(JSON.parse(text));
+  } catch {
+    return text;
+  }
+}
 
 /** Join the text blocks of a DSH message (user/assistant/tool shapes share it). */
 function messageText(message: unknown): string {
@@ -61,6 +219,8 @@ export function createTurnFacts(): TurnFacts {
 
 interface SessionEventLike {
   type: string;
+  seq?: number;
+  time?: number;
   data: Record<string, unknown>;
 }
 
@@ -73,8 +233,12 @@ export function attachEventBridge(
   agentCtx: DshCordisContextLike,
   callbacks: BridgeCallbacks,
   facts: TurnFacts,
+  transcript?: TranscriptObserver,
 ): () => void {
-  const pendingCalls = new Map<string, string>();
+  const pendingCalls = new Map<
+    string,
+    { name: string; meta: TurnFacts["toolMetas"][number] }
+  >();
 
   // Live assistant-text bookkeeping. DSH frames one assistant message per
   // turn step; a failed model call retries the same step with a fresh
@@ -88,6 +252,9 @@ export function attachEventBridge(
 
   const handleSessionEvent = (event: SessionEventLike): void => {
     const data = event.data ?? {};
+    // Persist durable surface events before any presentation work so a slow
+    // UI callback cannot reorder or drop transcript writes.
+    transcript?.observe(event);
     switch (event.type) {
       case "turn/start": {
         facts.deltaText = "";
@@ -105,22 +272,60 @@ export function attachEventBridge(
           facts.assistantTexts.push(text);
           facts.deltaText = "";
         }
-        if (data.usage !== undefined) facts.usage = data.usage;
+        if (data.usage !== undefined) facts.usage = normalizeDshUsage(data.usage);
         break;
       }
       case "tool/call": {
         facts.toolActivity = true;
         const name = typeof data.name === "string" ? data.name : "unknown";
-        facts.toolMetas.push({ toolName: name });
-        if (typeof data.callId === "string") pendingCalls.set(data.callId, name);
+        const callId = typeof data.callId === "string" ? data.callId : undefined;
+        const meta: TurnFacts["toolMetas"][number] = {
+          toolName: name,
+          ...(callId === undefined ? {} : { toolCallId: callId }),
+        };
+        facts.toolMetas.push(meta);
+        if (callId !== undefined) {
+          pendingCalls.set(callId, { name, meta });
+          callbacks.onToolEvent?.({
+            phase: "start",
+            toolCallId: callId,
+            name,
+            args: parseToolArguments(data.arguments),
+          });
+        }
         break;
       }
       case "tool/result": {
         facts.completedToolResults += 1;
-        const callId = typeof data.callId === "string" ? data.callId : undefined;
-        const name = (callId !== undefined ? pendingCalls.get(callId) : undefined) ?? "tool";
-        if (callId !== undefined) pendingCalls.delete(callId);
+        // The result event carries the id on its first-class tool message, not
+        // at the top level; fall back to a top-level id for older producers.
+        const message = data.message as
+          | { toolCallId?: unknown; isError?: unknown }
+          | undefined;
+        const callId =
+          typeof message?.toolCallId === "string"
+            ? message.toolCallId
+            : typeof data.callId === "string"
+              ? data.callId
+              : undefined;
+        const pending = callId === undefined ? undefined : pendingCalls.get(callId);
+        const name = pending?.name ?? "tool";
+        const isError = message?.isError === true || data.error !== undefined;
+        if (callId !== undefined && pending !== undefined) {
+          pending.meta.isError = isError;
+          pendingCalls.delete(callId);
+        }
         const text = messageText(data.message);
+        if (callId !== undefined) {
+          callbacks.onToolEvent?.({
+            phase: "result",
+            toolCallId: callId,
+            name,
+            result: truncate(text, TOOL_RESULT_EVENT_MAX_CHARS),
+            isError,
+            ...(data.meta !== undefined ? { meta: data.meta } : {}),
+          });
+        }
         if (text.trim() !== "") {
           void callbacks.onToolResult?.({ text: `[${name}] ${truncate(text, TOOL_RESULT_PREVIEW_CHARS)}` });
         }

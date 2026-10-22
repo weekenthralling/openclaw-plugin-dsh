@@ -14,6 +14,11 @@
  * - A thrown error inside runAttempt surfaces as a hard run failure with no
  *   embedded fallback, so every DSH failure is converted into a structured
  *   promptError result instead of escaping.
+ * - Plugin harnesses own their transcript: core persists only the user turn.
+ *   The attempt mirrors DSH assistant/tool events into OpenClaw's transcript
+ *   (transcript.ts), sets `currentAttemptAssistant` so the final reply payload
+ *   exists, and claims `assistantTranscriptOwned` for the assistant message it
+ *   wrote so core does not append it twice.
  *
  * DSH 0.2.0 note: turn failures arrive as `turn/end` with
  * `reason.kind === "error"` carrying the structured `LlmFailure` in
@@ -38,7 +43,8 @@ import {
   selectAgentModel,
 } from "./host.js";
 import { attemptSelectionFor, loadModelMirror } from "./openclaw-model.js";
-import { attachEventBridge, createTurnFacts } from "./events.js";
+import { attachEventBridge, createTurnFacts, toolDisplayFor } from "./events.js";
+import { createTranscriptObserver, type OwnedAssistantTranscript } from "./transcript.js";
 import type { DshPluginConfig } from "./types.js";
 
 const HARNESS_ID = "dsh";
@@ -74,6 +80,7 @@ function buildAttemptResult(params: {
   usage: unknown;
   provider: string;
   modelId: string;
+  ownedAssistant?: OwnedAssistantTranscript;
   classification?: "empty" | "reasoning-only" | "planning-only";
 }): AgentHarnessAttemptResult {
   const lastText = params.assistantTexts[params.assistantTexts.length - 1] ?? "";
@@ -86,10 +93,25 @@ function buildAttemptResult(params: {
           api: "responses",
           provider: params.provider,
           model: params.modelId,
-          stopReason: params.promptError === null ? ("stop" as const) : ("error" as const),
+          stopReason: params.promptError !== null
+            ? ("error" as const)
+            : params.aborted
+              ? ("aborted" as const)
+              : ("stop" as const),
           timestamp: Date.now(),
           ...(params.usage !== undefined ? { usage: params.usage } : {}),
         };
+  // Core builds the final reply payload from `currentAttemptAssistant`, not
+  // from `lastAssistant`; without it a plugin harness delivers no final text
+  // and the assistant turn never reaches the transcript. Only claim
+  // transcript ownership when this attempt really wrote that exact text, so a
+  // failed write falls back to core's own append instead of losing the reply.
+  const ownedAssistant =
+    params.ownedAssistant !== undefined &&
+    lastAssistant !== undefined &&
+    params.ownedAssistant.text === lastText
+      ? params.ownedAssistant
+      : undefined;
   return {
     aborted: params.aborted,
     externalAbort: params.externalAbort,
@@ -103,6 +125,18 @@ function buildAttemptResult(params: {
     assistantTexts: params.assistantTexts,
     toolMetas: params.toolMetas,
     lastAssistant,
+    ...(lastAssistant !== undefined
+      ? {
+          currentAttemptAssistant: lastAssistant,
+          currentAttemptCompletedAssistant: lastAssistant,
+        }
+      : {}),
+    ...(ownedAssistant !== undefined
+      ? {
+          assistantTranscriptOwned: true,
+          assistantTranscriptIdempotencyKey: ownedAssistant.idempotencyKey,
+        }
+      : {}),
     messagesSnapshot: [],
     messagingToolSentTexts: [],
     messagingToolSentMediaUrls: [],
@@ -206,10 +240,50 @@ export function createDshHarness(): AgentHarnessV2 {
 
         return await enqueueTurn(entry, async () => {
           const facts = createTurnFacts();
+          const transcript = createTranscriptObserver({
+            sessionTarget: params.sessionTarget,
+            sessionId: params.sessionId,
+            agentId: params.agentId,
+            sessionKey: params.sessionKey,
+            config: params.config,
+            runId: params.runId,
+            provider,
+            modelId,
+            log,
+          });
           let externalAbort = false;
           let timedOut = false;
           let attemptError: unknown = null;
 
+          // Publish one event to the global agent event bus and the harness
+          // callback surface. The Control UI's live text and tool cards are
+          // driven by these events, not by onPartialReply/onToolResult.
+          const publishAgentEvent = (stream: string, data: Record<string, unknown>): void => {
+            try {
+              emitAgentEvent({
+                runId: params.runId,
+                ...(params.sessionKey !== undefined && params.sessionKey !== ""
+                  ? { sessionKey: params.sessionKey }
+                  : {}),
+                stream,
+                data,
+              });
+            } catch (error) {
+              log(`${stream} agent event failed: ${String(error)}`);
+            }
+            try {
+              void Promise.resolve(params.onAgentEvent?.({ stream, data })).catch(
+                (error: unknown) => log(`${stream} agent event handler failed: ${String(error)}`),
+              );
+            } catch (error) {
+              log(`${stream} agent event handler failed: ${String(error)}`);
+            }
+          };
+
+          // Tool display facts per call id: the result event carries no args,
+          // so the label/meta used for the item activity are captured on
+          // start and reused when the result settles.
+          const toolDisplays = new Map<string, ReturnType<typeof toolDisplayFor>>();
           const detach = attachEventBridge(agent.ctx, {
             onPartialReply: (payload) => params.onPartialReply?.(payload),
             onReasoningStream: (payload) => params.onReasoningStream?.({ ...payload, text: payload.text }),
@@ -219,34 +293,68 @@ export function createDshHarness(): AgentHarnessV2 {
             // `onPartialReply` only feeds channel presentation. Mirror the
             // native harness: publish a cumulative-text snapshot per chunk.
             onAssistantStream: (payload) => {
-              const data: Record<string, unknown> = {
+              publishAgentEvent("assistant", {
                 itemId: payload.itemId,
                 text: payload.text,
                 delta: payload.delta,
                 replaceable: true,
                 ...(payload.replace === true ? { replace: true } : {}),
+              });
+            },
+            // Tool cards follow the same rule: `stream:"tool"` events with a
+            // call id drive the page, while `onToolResult` only feeds channel
+            // progress text. Mirror the native harness by also publishing a
+            // `stream:"item"` tool activity per phase: the Control UI renders
+            // the descriptive title line ("Bash echo …") and terminal icon
+            // from the item's title/meta/commandBearing, not from the tool
+            // event itself.
+            onToolEvent: (payload) => {
+              const data: Record<string, unknown> = {
+                phase: payload.phase,
+                name: payload.name,
+                toolCallId: payload.toolCallId,
               };
-              try {
-                emitAgentEvent({
-                  runId: params.runId,
-                  ...(params.sessionKey !== undefined && params.sessionKey !== ""
-                    ? { sessionKey: params.sessionKey }
-                    : {}),
-                  stream: "assistant",
-                  data,
-                });
-              } catch (error) {
-                log(`assistant agent event failed: ${String(error)}`);
+              let display = payload.phase === "start" ? undefined : toolDisplays.get(payload.toolCallId);
+              if (display === undefined) {
+                display = toolDisplayFor(payload.name, payload.args);
+                toolDisplays.set(payload.toolCallId, display);
               }
-              try {
-                void Promise.resolve(params.onAgentEvent?.({ stream: "assistant", data })).catch(
-                  (error: unknown) => log(`assistant agent event handler failed: ${String(error)}`),
-                );
-              } catch (error) {
-                log(`assistant agent event handler failed: ${String(error)}`);
+              const itemBase: Record<string, unknown> = {
+                kind: "tool",
+                itemId: `tool:${payload.toolCallId}`,
+                toolCallId: payload.toolCallId,
+                name: payload.name,
+                commandBearing: display.commandBearing,
+                hideFromChannelProgress: true,
+              };
+              if (payload.phase === "start") {
+                if (payload.args !== undefined) data.args = payload.args;
+                publishAgentEvent("tool", data);
+                publishAgentEvent("item", {
+                  ...itemBase,
+                  phase: "start",
+                  title: display.label,
+                  status: "running",
+                });
+              } else {
+                if (payload.result !== undefined) data.result = payload.result;
+                data.isError = payload.isError === true;
+                if (payload.meta !== undefined) data.meta = payload.meta;
+                data.commandBearing = display.commandBearing;
+                publishAgentEvent("tool", data);
+                publishAgentEvent("item", {
+                  ...itemBase,
+                  phase: "end",
+                  title:
+                    display.meta !== undefined
+                      ? `${display.label} ${display.meta}`
+                      : display.label,
+                  status: payload.isError === true ? "failed" : "completed",
+                  ...(display.meta !== undefined ? { meta: display.meta } : {}),
+                });
               }
             },
-          }, facts);
+          }, facts, transcript);
 
           const abortListener = (): void => {
             externalAbort = true;
@@ -290,6 +398,10 @@ export function createDshHarness(): AgentHarnessV2 {
               log(`session flush failed: ${String(error)}`);
             }
             detach();
+            // Every DSH event was observed before whenIdle() resolved; await
+            // the queued transcript writes so the attempt result can safely
+            // claim ownership of the last assistant message.
+            await transcript.flush();
           }
 
           // A DSH turn that closed with a structured error (e.g. credential or
@@ -311,6 +423,7 @@ export function createDshHarness(): AgentHarnessV2 {
           const assistantTexts = facts.assistantTexts.length > 0
             ? facts.assistantTexts
             : facts.deltaText.trim() !== "" ? [facts.deltaText] : [];
+          const ownedAssistant = transcript.ownedAssistant();
 
           const classification = classifyAgentHarnessTerminalOutcome({
             turnCompleted: true,
@@ -334,6 +447,7 @@ export function createDshHarness(): AgentHarnessV2 {
             usage: facts.usage,
             provider,
             modelId,
+            ownedAssistant,
             classification,
           });
 
