@@ -51,6 +51,21 @@ function impl(): Promise<HarnessImpl> {
 const harness = {
   id: HARNESS_ID,
   label: "DeepSeek Harness (DSH) agent harness",
+  // Preflight (harness selection/availability) reads the REGISTERED object —
+  // this wrapper — before any runAttempt loads the lazy implementation, so
+  // the tool-policy capability must be declared here as well. Enforcement
+  // itself lives in the implementation (see tool-policy.ts).
+  conversationToolPolicySupport: "exact",
+  conversationToolPolicySafeDenyTools: [
+    "exec",
+    "process",
+    "read",
+    "write",
+    "edit",
+    "ls",
+    "web_search",
+    "web_fetch",
+  ],
 
   supports(ctx: { requestedRuntime?: string; provider?: string }): unknown {
     if (ctx?.requestedRuntime === HARNESS_ID) {
