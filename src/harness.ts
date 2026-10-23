@@ -44,6 +44,7 @@ import {
 } from "./host.js";
 import { attemptSelectionFor, loadModelMirror } from "./openclaw-model.js";
 import { attachEventBridge, createTurnFacts, toolDisplayFor } from "./events.js";
+import { attachDshToolPolicy } from "./tool-policy.js";
 import { createTranscriptObserver, type OwnedAssistantTranscript } from "./transcript.js";
 import type { DshPluginConfig } from "./types.js";
 
@@ -187,6 +188,21 @@ export function createDshHarness(): AgentHarnessV2 {
     id: HARNESS_ID,
     label: "DeepSeek Harness (DSH) agent harness",
 
+    // Certify exact conversation-tool-policy enforcement (see tool-policy.ts):
+    // restricted chats (allow-lists / denies) run on DSH with the policy
+    // mapped onto the embedded runtime's tools instead of failing preflight.
+    conversationToolPolicySupport: "exact",
+    conversationToolPolicySafeDenyTools: [
+      "exec",
+      "process",
+      "read",
+      "write",
+      "edit",
+      "ls",
+      "web_search",
+      "web_fetch",
+    ],
+
     supports(ctx) {
       if (ctx.requestedRuntime === HARNESS_ID) {
         return { supported: true, priority: 200, reason: "explicitly pinned dsh runtime" };
@@ -284,6 +300,9 @@ export function createDshHarness(): AgentHarnessV2 {
           // so the label/meta used for the item activity are captured on
           // start and reused when the result settles.
           const toolDisplays = new Map<string, ReturnType<typeof toolDisplayFor>>();
+          // Apply this conversation's tool policy to the embedded agent
+          // before the turn opens; lifted when the attempt settles.
+          const liftToolPolicy = attachDshToolPolicy(agent, params, log);
           const detach = attachEventBridge(agent.ctx, {
             onPartialReply: (payload) => params.onPartialReply?.(payload),
             onReasoningStream: (payload) => params.onReasoningStream?.({ ...payload, text: payload.text }),
@@ -402,6 +421,7 @@ export function createDshHarness(): AgentHarnessV2 {
             // the queued transcript writes so the attempt result can safely
             // claim ownership of the last assistant message.
             await transcript.flush();
+            liftToolPolicy();
           }
 
           // A DSH turn that closed with a structured error (e.g. credential or
